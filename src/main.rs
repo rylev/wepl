@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use anyhow::{anyhow, bail, ensure, Context as _};
 use clap::Parser;
 use rustyline::error::ReadlineError;
@@ -7,7 +9,7 @@ use wasmtime::{
 };
 use wasmtime_wasi::preview2::{Table, WasiCtx, WasiCtxBuilder, WasiView};
 use wit_component::DecodedWasm;
-use wit_parser::{World, WorldKey};
+use wit_parser::{Resolve, World, WorldKey};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -37,7 +39,7 @@ async fn main() -> anyhow::Result<()> {
                 let line = Cmd::parse(&line);
                 match line {
                     Ok(cmd) => {
-                        if let Err(e) = cmd.run(&instance, &mut store, &world).await {
+                        if let Err(e) = cmd.run(&resolve, &instance, &mut store, &world).await {
                             eprintln!("Error executing command: {e}");
                         }
                     }
@@ -104,6 +106,7 @@ impl<'a> Cmd<'a> {
 
     async fn run(
         &self,
+        resolve: &Resolve,
         instance: &Instance,
         store: &mut Store<Context>,
         world: &World,
@@ -124,28 +127,50 @@ impl<'a> Cmd<'a> {
                     .root()
                     .func(&func_def.name)
                     .with_context(|| format!("could not find function {name}' in instance"))?;
-                let mut params = Vec::with_capacity(func_def.params.len());
+
+                let mut parsed_args = Vec::with_capacity(func_def.params.len());
+                if func_def.params.len() != args.len() {
+                    bail!(
+                        "tried to call a function that has {} params with {} args",
+                        func_def.params.len(),
+                        args.len()
+                    )
+                }
                 for ((param_name, param_type), arg) in func_def.params.iter().zip(args) {
-                    let param = match param_type {
+                    let parsed_arg = match param_type {
                         wit_parser::Type::U8 => arg.parse::<u8>().map(Val::U8).map_err(Into::into),
+                        wit_parser::Type::U16 => {
+                            arg.parse::<u16>().map(Val::U16).map_err(Into::into)
+                        }
+                        wit_parser::Type::U32 => {
+                            arg.parse::<u32>().map(Val::U32).map_err(Into::into)
+                        }
+                        wit_parser::Type::U64 => {
+                            arg.parse::<u64>().map(Val::U64).map_err(Into::into)
+                        }
                         wit_parser::Type::String => {
                             parse_string(arg).map(|s| Val::String(s.to_owned().into_boxed_str()))
                         }
                         p => todo!("handle params of type {p:?}"),
-                    };
-                    let param = param.map_err(|e| {
-                        anyhow!("could not parse argument {param_name} to function: {e}")
+                    }
+                    .map_err(|e| {
+                        anyhow!(
+                            "could not parse argument {param_name} as {} to function: {e}",
+                            display_wit_type(param_type, resolve)
+                                .unwrap_or(Cow::Borrowed("<DISPLAY_ERROR>"))
+                        )
                     })?;
-                    params.push(param)
+                    parsed_args.push(parsed_arg)
                 }
 
                 let mut results = vec![Val::Bool(Default::default()); func_def.results.len()];
-                func.call_async(&mut *store, &params, &mut results).await?;
+                func.call_async(&mut *store, &parsed_args, &mut results)
+                    .await?;
                 println!(
                     "{}",
                     results
                         .into_iter()
-                        .map(|v| format_val(v))
+                        .map(|v| format_val(&v))
                         .collect::<Vec<_>>()
                         .join(", ")
                 )
@@ -180,16 +205,15 @@ impl<'a> Cmd<'a> {
                         let name = &f.name;
                         let mut params = Vec::new();
                         for (param_name, param_type) in &f.params {
-                            let ty = match param_type {
-                                wit_parser::Type::String => "String",
-                                _ => todo!(),
-                            };
+                            let ty = display_wit_type(param_type, resolve)?;
                             params.push(format!("{param_name}: {ty}"));
                         }
                         let params = params.join(", ");
                         let rets = match &f.results {
                             wit_parser::Results::Anon(t) => match t {
-                                wit_parser::Type::String => " -> String",
+                                wit_parser::Type::String => {
+                                    format!(" -> {}", display_wit_type(t, resolve)?)
+                                }
                                 _ => todo!(),
                             },
                             wit_parser::Results::Named(_) => todo!(),
@@ -204,6 +228,33 @@ impl<'a> Cmd<'a> {
     }
 }
 
+fn display_wit_type<'a>(
+    param_type: &wit_parser::Type,
+    resolve: &Resolve,
+) -> anyhow::Result<Cow<'a, str>> {
+    let str = match param_type {
+        wit_parser::Type::Bool => "bool",
+        wit_parser::Type::U8 => "u8",
+        wit_parser::Type::U16 => "u16",
+        wit_parser::Type::U32 => "u32",
+        wit_parser::Type::U64 => "u64",
+        wit_parser::Type::S8 => "s8",
+        wit_parser::Type::S16 => "s16",
+        wit_parser::Type::S32 => "s32",
+        wit_parser::Type::S64 => "s64",
+        wit_parser::Type::Float32 => "float32",
+        wit_parser::Type::Float64 => "float64",
+        wit_parser::Type::String => "string",
+        wit_parser::Type::Char => "char",
+        wit_parser::Type::Id(id) => {
+            let typ = resolve.types.get(*id).context("missing type definition")?;
+            let name = typ.name.clone().context("type does not have a name")?;
+            return Ok(Cow::Owned(name));
+        }
+    };
+    Ok(Cow::Borrowed(str))
+}
+
 fn parse_string(arg: &str) -> anyhow::Result<&str> {
     let Some(arg) = arg.strip_prefix('"') else {
         bail!("missing open quote")
@@ -214,10 +265,38 @@ fn parse_string(arg: &str) -> anyhow::Result<&str> {
     Ok(arg)
 }
 
-fn format_val(val: Val) -> String {
+fn format_val(val: &Val) -> String {
     match val {
         Val::String(s) => format!(r#""{s}""#),
-        _ => todo!("format {val:?}"),
+        Val::Bool(b) => b.to_string(),
+        Val::U8(u) => u.to_string(),
+        Val::U16(u) => u.to_string(),
+        Val::U32(u) => u.to_string(),
+        Val::U64(u) => u.to_string(),
+        Val::S8(s) => s.to_string(),
+        Val::S16(s) => s.to_string(),
+        Val::S32(s) => s.to_string(),
+        Val::S64(s) => s.to_string(),
+        Val::Float32(f) => f.to_string(),
+        Val::Float64(f) => f.to_string(),
+        Val::Char(c) => c.to_string(),
+        Val::Option(o) => match o.value() {
+            Some(o) => format!("Some({})", format_val(o)),
+            None => "None".into(),
+        },
+        Val::Result(r) => match r.value() {
+            Ok(Some(o)) => format!("Ok({})", format_val(o)),
+            Ok(None) => "Ok".to_string(),
+            Err(Some(e)) => format!("Err({})", format_val(e)),
+            Err(None) => "Err".to_string(),
+        },
+        Val::List(_) => todo!(),
+        Val::Record(_) => todo!(),
+        Val::Tuple(_) => todo!(),
+        Val::Variant(_) => todo!(),
+        Val::Enum(_) => todo!(),
+        Val::Flags(_) => todo!(),
+        Val::Resource(_) => todo!(),
     }
 }
 
