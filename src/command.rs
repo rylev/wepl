@@ -1,4 +1,5 @@
-use anyhow::{anyhow, bail, ensure, Context as _};
+mod parser;
+use anyhow::{anyhow, bail, Context as _};
 use wasmtime::component::Val;
 
 use super::runtime::Runtime;
@@ -6,35 +7,15 @@ use super::wit::Querier;
 
 pub enum Cmd<'a> {
     BuiltIn { name: &'a str, args: Vec<&'a str> },
-    CallFunction { name: &'a str, args: Vec<&'a str> },
+    CallFunction { name: &'a str, args: Vec<String> },
 }
 
 impl<'a> Cmd<'a> {
-    pub fn parse(s: &'a str) -> anyhow::Result<Self> {
+    pub fn parse(s: &'a str) -> anyhow::Result<Cmd<'a>> {
         let s = s.trim();
 
-        fn parse_builtin(input: &str) -> nom::IResult<&str, (&str, Vec<&str>)> {
-            use nom::branch::alt;
-            use nom::bytes::complete::tag;
-            use nom::character::complete::{alpha1, multispace0};
-            use nom::combinator::recognize;
-            use nom::multi::many0_count;
-            use nom::sequence::{delimited, pair};
-
-            let ident_parser = recognize(pair(alpha1, many0_count(alt((alpha1, tag("-"))))));
-            let mut ident_parser = delimited(multispace0, ident_parser, multispace0);
-            let (rest, ident) = ident_parser(input)?;
-            let args = rest
-                .split(' ')
-                .map(|a| a.trim())
-                .filter(|a| !a.is_empty())
-                .collect();
-
-            Ok((rest, (ident, args)))
-        }
-
         if let Some(builtin) = s.strip_prefix('.') {
-            match parse_builtin(builtin) {
+            match parser::builtin(builtin) {
                 Ok((_, (name, args))) => return Ok(Cmd::BuiltIn { name, args }),
                 _ => bail!("could not parse call to built-in function: {builtin}"),
             }
@@ -52,15 +33,7 @@ impl<'a> Cmd<'a> {
         }
 
         // try to parse a function
-        let open_paren = s.find('(').context("no open parenthesis present")?;
-        let name = &s[..open_paren];
-        ensure!(&s[s.len() - 1..] == ")", "Missing ending paren");
-        let arg_list = &s[open_paren + 1..s.len() - 1];
-        let args = arg_list
-            .split(", ")
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-            .collect();
+        let (_, (name, args)) = parser::function_call(s).map_err(|e| anyhow!("{e}"))?;
 
         Ok(Cmd::CallFunction { name, args })
     }
