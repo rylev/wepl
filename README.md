@@ -15,6 +15,15 @@ uppercase: func(input: String) -> String
 "HELLO"
 ```
 
+## Built-in Functions
+
+Built-in functions can be called by using the `.` prefix.
+
+Supported functions include:
+* `.inspect`: inspect a name in scope (`?` is alias for this built-in)
+* `.imports`: print a list of all the component's imports
+* `.exports`: print a list of all the component's exports
+
 ## Features
 
 * Function Evaluation
