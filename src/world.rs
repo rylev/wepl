@@ -124,6 +124,23 @@ impl Querier {
             })
     }
 
+    pub fn world_item_name(&self, name: &WorldKey) -> anyhow::Result<String> {
+        let import_name = match name {
+            WorldKey::Name(n) => n.clone(),
+            WorldKey::Interface(i) => {
+                let interface = self.resolve.interfaces.get(*i).unwrap();
+                match &interface.package {
+                    Some(package_id) => {
+                        let package = self.resolve.packages.get(*package_id).unwrap();
+                        format!("{}/{}", package.name, interface.name.as_ref().unwrap())
+                    }
+                    None => todo!(),
+                }
+            }
+        };
+        Ok(import_name)
+    }
+
     pub fn world(&self) -> &World {
         self.resolve
             .worlds

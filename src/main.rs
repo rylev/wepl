@@ -10,7 +10,7 @@ use wasmtime::{
     Config, Engine, Store,
 };
 use wasmtime_wasi::preview2::{Table, WasiCtx, WasiCtxBuilder, WasiView};
-use wit_parser::{FunctionKind, WorldKey};
+use wit_parser::FunctionKind;
 use world::Querier;
 
 #[tokio::main]
@@ -93,8 +93,7 @@ fn print_prefix(prefix: &str, color: termcolor::Color) {
 }
 
 enum Cmd<'a> {
-    ListExports,
-    InspectExport { name: &'a str },
+    BuiltIn { name: &'a str, args: Vec<&'a str> },
     CallFunction { name: &'a str, args: Vec<&'a str> },
 }
 
@@ -102,11 +101,30 @@ impl<'a> Cmd<'a> {
     fn parse(s: &'a str) -> anyhow::Result<Self> {
         let s = s.trim();
 
-        if let Some(command) = s.strip_prefix('.') {
-            // Commands
-            match command {
-                "exports" => return Ok(Cmd::ListExports),
-                _ => bail!("unrecognized command: {command}"),
+        fn parse_builtin(input: &str) -> nom::IResult<&str, (&str, Vec<&str>)> {
+            use nom::branch::alt;
+            use nom::bytes::complete::tag;
+            use nom::character::complete::{alpha1, multispace0};
+            use nom::combinator::recognize;
+            use nom::multi::many0_count;
+            use nom::sequence::{delimited, pair};
+
+            let ident_parser = recognize(pair(alpha1, many0_count(alt((alpha1, tag("-"))))));
+            let mut ident_parser = delimited(multispace0, ident_parser, multispace0);
+            let (rest, ident) = ident_parser(input)?;
+            let args = rest
+                .split(',')
+                .map(|a| a.trim())
+                .filter(|a| !a.is_empty())
+                .collect();
+
+            Ok((rest, (ident, args)))
+        }
+
+        if let Some(builtin) = s.strip_prefix('.') {
+            match parse_builtin(builtin) {
+                Ok((_, (name, args))) => return Ok(Cmd::BuiltIn { name, args }),
+                _ => bail!("could not parse call to built-in function: {builtin}"),
             }
         }
 
@@ -115,7 +133,10 @@ impl<'a> Cmd<'a> {
             if export.contains(char::is_whitespace) {
                 bail!("invalid export name '{export}'. Identifiers can't contain whitespace");
             }
-            return Ok(Self::InspectExport { name: export });
+            return Ok(Self::BuiltIn {
+                name: "inspect",
+                args: vec![export],
+            });
         }
 
         // try to parse a function
@@ -196,11 +217,12 @@ impl<'a> Cmd<'a> {
                         .join(", ")
                 )
             }
-            Cmd::ListExports => {
+            Cmd::BuiltIn {
+                name: "exports",
+                args: _,
+            } => {
                 for (export_name, export) in querier.world().exports.iter() {
-                    let WorldKey::Name(export_name) = &export_name else {
-                        continue;
-                    };
+                    let export_name = querier.world_item_name(export_name)?;
                     let export_type = match export {
                         wit_parser::WorldItem::Interface(_) => "interface",
                         wit_parser::WorldItem::Function(_) => "function",
@@ -209,7 +231,16 @@ impl<'a> Cmd<'a> {
                     println!("{export_name}: {export_type}");
                 }
             }
-            Cmd::InspectExport { name } => {
+            Cmd::BuiltIn {
+                name: "inspect",
+                args,
+            } => {
+                let &[name] = args.as_slice() else {
+                    bail!(
+                        "wrong number of arguments to inspect function. Expected 1 got {}",
+                        args.len()
+                    )
+                };
                 let export = querier.export(name)?;
                 match export {
                     wit_parser::WorldItem::Interface(_) => todo!(),
@@ -234,6 +265,29 @@ impl<'a> Cmd<'a> {
                     }
                     wit_parser::WorldItem::Type(_) => todo!(),
                 }
+            }
+            Cmd::BuiltIn {
+                name: "imports",
+                args,
+            } => {
+                let &[] = args.as_slice() else {
+                    bail!(
+                        "wrong number of arguments to imports function. Expected 0 got {}",
+                        args.len()
+                    )
+                };
+                for (import_name, import) in querier.world().imports.iter() {
+                    let import_name = querier.world_item_name(import_name)?;
+                    let import_type = match import {
+                        wit_parser::WorldItem::Interface(_) => "interface",
+                        wit_parser::WorldItem::Function(_) => "function",
+                        wit_parser::WorldItem::Type(_) => "type",
+                    };
+                    println!("{import_name}: {import_type}");
+                }
+            }
+            Cmd::BuiltIn { name, args: _ } => {
+                bail!("Unrecognized built-in function '{name}'")
             }
         }
         Ok(())
