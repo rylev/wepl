@@ -1,3 +1,5 @@
+mod world;
+
 use std::borrow::Cow;
 
 use anyhow::{anyhow, bail, ensure, Context as _};
@@ -8,24 +10,30 @@ use wasmtime::{
     Config, Engine, Store,
 };
 use wasmtime_wasi::preview2::{Table, WasiCtx, WasiCtxBuilder, WasiView};
-use wit_component::DecodedWasm;
-use wit_parser::{Resolve, World, WorldKey};
+use wit_parser::{FunctionKind, WorldKey};
+use world::Querier;
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() {
+    if let Err(e) = _main().await {
+        print_error_prefix();
+        eprintln!("{e}");
+        if e.source().is_some() {
+            eprintln!("\nCaused by:");
+        }
+        for e in e.chain().skip(1) {
+            eprintln!("  {e}")
+        }
+    }
+}
+
+async fn _main() -> anyhow::Result<()> {
     env_logger::init();
 
     let cli = Cli::parse();
     let component_bytes = std::fs::read(cli.component)?;
-    let (mut store, instance) = init_store_and_instance(&component_bytes).await?;
-
-    let (resolve, world) = match wit_component::decode(&component_bytes)
-        .context("could not decode given file as a WebAssembly component")?
-    {
-        DecodedWasm::Component(r, w) => (r, w),
-        _ => bail!("found wit package instead of the expect WebAssembly component"),
-    };
-    let world = resolve.worlds.get(world).context("world not found")?;
+    let querier = Querier::from_bytes(&component_bytes)?;
+    let (mut store, instance) = init_store_and_instance(&component_bytes, &querier).await?;
 
     let mut rl = rustyline::DefaultEditor::new()?;
     if let Some(home) = home::home_dir() {
@@ -39,14 +47,12 @@ async fn main() -> anyhow::Result<()> {
                 let line = Cmd::parse(&line);
                 match line {
                     Ok(cmd) => {
-                        if let Err(e) = cmd.run(&resolve, &instance, &mut store, &world).await {
-                            eprintln!("Error executing command: {e}");
+                        if let Err(e) = cmd.run(&instance, &mut store, &querier).await {
+                            print_error_prefix();
+                            eprintln!("{e}");
                         }
                     }
-                    Err(e) => {
-                        eprintln!("Error parsing input: {e}");
-                        continue;
-                    }
+                    Err(e) => eprintln!("Error parsing input: {e}"),
                 }
             }
             Err(ReadlineError::Interrupted) | Err(ReadlineError::Eof) => break,
@@ -66,6 +72,24 @@ async fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+fn print_error_prefix() {
+    print_prefix("Error: ", termcolor::Color::Red)
+}
+
+fn print_prefix(prefix: &str, color: termcolor::Color) {
+    use std::io::Write;
+    use termcolor::WriteColor;
+    let mut stderr = termcolor::StandardStream::stderr(termcolor::ColorChoice::Always);
+    let _ = stderr.set_color(
+        termcolor::ColorSpec::new()
+            .set_fg(Some(color))
+            .set_bold(true),
+    );
+    let _ = write!(&mut stderr, "{}", prefix);
+    let _ = stderr.flush();
+    let _ = stderr.reset();
 }
 
 enum Cmd<'a> {
@@ -99,29 +123,25 @@ impl<'a> Cmd<'a> {
         let name = &s[..open_paren];
         ensure!(&s[s.len() - 1..] == ")", "Missing ending paren");
         let arg_list = &s[open_paren + 1..s.len() - 1];
-        let args = arg_list.split(", ").map(|s| s.trim()).collect();
+        let args = arg_list
+            .split(", ")
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .collect();
 
         Ok(Cmd::CallFunction { name, args })
     }
 
     async fn run(
         &self,
-        resolve: &Resolve,
         instance: &Instance,
         store: &mut Store<Context>,
-        world: &World,
+        querier: &Querier,
     ) -> anyhow::Result<()> {
         match self {
             Cmd::CallFunction { name, args } => {
-                log::debug!("Calling function: {name}");
-                let func_def = world
-                    .exports
-                    .iter()
-                    .find_map(|(_, kind)| match kind {
-                        wit_parser::WorldItem::Function(f) if &f.name == name => Some(f),
-                        _ => None,
-                    })
-                    .with_context(|| format!("Unrecognized function '{name}'"))?;
+                log::debug!("Calling function: {name} with args: {args:?}");
+                let func_def = querier.exported_function(name)?;
                 let func = instance
                     .exports(&mut *store)
                     .root()
@@ -156,7 +176,8 @@ impl<'a> Cmd<'a> {
                     .map_err(|e| {
                         anyhow!(
                             "could not parse argument {param_name} as {} to function: {e}",
-                            display_wit_type(param_type, resolve)
+                            querier
+                                .display_wit_type(param_type)
                                 .unwrap_or(Cow::Borrowed("<DISPLAY_ERROR>"))
                         )
                     })?;
@@ -176,7 +197,7 @@ impl<'a> Cmd<'a> {
                 )
             }
             Cmd::ListExports => {
-                for (export_name, export) in world.exports.iter() {
+                for (export_name, export) in querier.world().exports.iter() {
                     let WorldKey::Name(export_name) = &export_name else {
                         continue;
                     };
@@ -189,30 +210,21 @@ impl<'a> Cmd<'a> {
                 }
             }
             Cmd::InspectExport { name } => {
-                let export = world
-                    .exports
-                    .iter()
-                    .find_map(|(export_name, export)| {
-                        let WorldKey::Name(n) = export_name else {
-                            return None;
-                        };
-                        (n == name).then_some(export)
-                    })
-                    .with_context(|| format!("no export with name '{name}'"))?;
+                let export = querier.export(name)?;
                 match export {
                     wit_parser::WorldItem::Interface(_) => todo!(),
                     wit_parser::WorldItem::Function(f) => {
                         let name = &f.name;
                         let mut params = Vec::new();
                         for (param_name, param_type) in &f.params {
-                            let ty = display_wit_type(param_type, resolve)?;
+                            let ty = querier.display_wit_type(param_type)?;
                             params.push(format!("{param_name}: {ty}"));
                         }
                         let params = params.join(", ");
                         let rets = match &f.results {
                             wit_parser::Results::Anon(t) => match t {
                                 wit_parser::Type::String => {
-                                    format!(" -> {}", display_wit_type(t, resolve)?)
+                                    format!(" -> {}", querier.display_wit_type(t)?)
                                 }
                                 _ => todo!(),
                             },
@@ -226,33 +238,6 @@ impl<'a> Cmd<'a> {
         }
         Ok(())
     }
-}
-
-fn display_wit_type<'a>(
-    param_type: &wit_parser::Type,
-    resolve: &Resolve,
-) -> anyhow::Result<Cow<'a, str>> {
-    let str = match param_type {
-        wit_parser::Type::Bool => "bool",
-        wit_parser::Type::U8 => "u8",
-        wit_parser::Type::U16 => "u16",
-        wit_parser::Type::U32 => "u32",
-        wit_parser::Type::U64 => "u64",
-        wit_parser::Type::S8 => "s8",
-        wit_parser::Type::S16 => "s16",
-        wit_parser::Type::S32 => "s32",
-        wit_parser::Type::S64 => "s64",
-        wit_parser::Type::Float32 => "float32",
-        wit_parser::Type::Float64 => "float64",
-        wit_parser::Type::String => "string",
-        wit_parser::Type::Char => "char",
-        wit_parser::Type::Id(id) => {
-            let typ = resolve.types.get(*id).context("missing type definition")?;
-            let name = typ.name.clone().context("type does not have a name")?;
-            return Ok(Cow::Owned(name));
-        }
-    };
-    Ok(Cow::Borrowed(str))
 }
 
 fn parse_string(arg: &str) -> anyhow::Result<&str> {
@@ -302,13 +287,32 @@ fn format_val(val: &Val) -> String {
 
 async fn init_store_and_instance(
     component_bytes: &[u8],
+    querier: &Querier,
 ) -> anyhow::Result<(Store<Context>, Instance)> {
     let engine = load_engine()?;
     let component = load_component(&engine, &component_bytes)?;
     let mut linker = Linker::<Context>::new(&engine);
 
-    wasmtime_wasi::preview2::command::add_to_linker(&mut linker)?;
-    let pre = linker.instantiate_pre(&component)?;
+    if querier.imports_wasi() {
+        wasmtime_wasi::preview2::command::add_to_linker(&mut linker)?;
+    }
+    for (import_name, import) in querier.non_wasi_imports() {
+        match import {
+            wit_parser::WorldItem::Function(f) if f.kind == FunctionKind::Freestanding => {
+                linker
+                    .root()
+                    .func_new(&component, &f.name, move |_ctx, _args, _rets| {
+                        print_error_prefix();
+                        eprintln!("unimplemented import: {import_name}");
+                        Ok(())
+                    })?;
+            }
+            i => todo!("Implement import: {i:?}"),
+        }
+    }
+    let pre = linker
+        .instantiate_pre(&component)
+        .context("could not instantiate component")?;
     let mut store = build_store(&engine);
     let instance = pre.instantiate_async(&mut store).await?;
     Ok((store, instance))

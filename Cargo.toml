@@ -6,11 +6,12 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0"
 clap = { version = "4.4.2", features = ["derive"] }
-tokio = { version = "1.0", features = ["macros"] }
-rustyline = "12.0.0"
-log = "0.4"
 env_logger = "0.10"
 home = "0.5.5"
+log = "0.4"
+rustyline = "12.0.0"
+termcolor = "1.2"
+tokio = { version = "1.0", features = ["macros"] }
 
 # component model deps as of 2023-09-08
 wasmtime = { git = "https://github.com/bytecodealliance/wasmtime", rev = "134dddc8de5f9011aa7e4cf30cb8e9f9fa484e87", features = [
@@ -20,6 +21,5 @@ wasmtime-wasi = { git = "https://github.com/bytecodealliance/wasmtime", rev = "1
     "tokio",
 ] }
 # wasi-virt = { git = "https://github.com/bytecodealliance/WASI-Virt", rev = "c485962a7cb44637005fb6cfc3cf1515d81fe418" }
-
 wit-component = { git = "https://github.com/bytecodealliance/wasm-tools", rev = "e2af293273db65712b6f31da85f7aa5eb31abfde" }
 wit-parser = { git = "https://github.com/bytecodealliance/wasm-tools", rev = "e2af293273db65712b6f31da85f7aa5eb31abfde" }

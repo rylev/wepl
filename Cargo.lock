@@ -2210,6 +2210,7 @@ dependencies = [
  "home",
  "log",
  "rustyline",
+ "termcolor",
  "tokio",
  "wasmtime",
  "wasmtime-wasi",
