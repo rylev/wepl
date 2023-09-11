@@ -1,5 +1,3 @@
-use std::borrow::Cow;
-
 use anyhow::{anyhow, bail, ensure, Context as _};
 use wasmtime::component::Val;
 
@@ -100,9 +98,7 @@ impl<'a> Cmd<'a> {
                     .map_err(|e| {
                         anyhow!(
                             "could not parse argument {param_name} as {} to function: {e}",
-                            querier
-                                .display_wit_type(param_type)
-                                .unwrap_or(Cow::Borrowed("<DISPLAY_ERROR>"))
+                            querier.display_wit_type(param_type)
                         )
                     })?;
                     parsed_args.push(parsed_arg)
@@ -151,17 +147,15 @@ impl<'a> Cmd<'a> {
                         let name = &f.name;
                         let mut params = Vec::new();
                         for (param_name, param_type) in &f.params {
-                            let ty = querier.display_wit_type(param_type)?;
+                            let ty = querier.display_wit_type(param_type);
                             params.push(format!("{param_name}: {ty}"));
                         }
                         let params = params.join(", ");
                         let rets = match &f.results {
-                            wit_parser::Results::Anon(t) => match t {
-                                wit_parser::Type::String => {
-                                    format!(" -> {}", querier.display_wit_type(t)?)
-                                }
-                                _ => todo!(),
-                            },
+                            wit_parser::Results::Anon(t) => {
+                                let t = querier.display_wit_type(t);
+                                format!(" -> {t}")
+                            }
                             wit_parser::Results::Named(_) => todo!(),
                         };
                         println!("{name}: func({params}){rets}")

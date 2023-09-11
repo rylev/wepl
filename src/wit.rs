@@ -51,10 +51,7 @@ impl Querier {
             .with_context(|| format!("no export with name '{name}'"))
     }
 
-    pub fn display_wit_type<'a>(
-        &self,
-        param_type: &wit_parser::Type,
-    ) -> anyhow::Result<Cow<'a, str>> {
+    pub fn display_wit_type<'a>(&self, param_type: &wit_parser::Type) -> Cow<'a, str> {
         let str = match param_type {
             wit_parser::Type::Bool => "bool",
             wit_parser::Type::U8 => "u8",
@@ -74,12 +71,40 @@ impl Querier {
                     .resolve
                     .types
                     .get(*id)
-                    .context("missing type definition")?;
-                let name = typ.name.clone().context("type does not have a name")?;
-                return Ok(Cow::Owned(name));
+                    .expect("found type id for type not present in resolver");
+                let name = match typ.name.clone() {
+                    Some(n) => n,
+                    None => match &typ.kind {
+                        wit_parser::TypeDefKind::Option(o) => {
+                            format!("option<{}>", self.display_wit_type(o))
+                        }
+                        wit_parser::TypeDefKind::Result(r) => {
+                            let ok = r.ok.as_ref().map(|o| self.display_wit_type(o));
+                            let err = r.err.as_ref().map(|o| self.display_wit_type(o));
+                            match (ok, err) {
+                                (Some(ok), Some(err)) => format!("result<{ok}, {err}>"),
+                                (Some(t), _) | (_, Some(t)) => format!("result<{t}>"),
+                                _ => format!("result"),
+                            }
+                        }
+                        wit_parser::TypeDefKind::Type(t) => return self.display_wit_type(t),
+                        wit_parser::TypeDefKind::Unknown => unreachable!(),
+                        wit_parser::TypeDefKind::Record(_) => todo!(),
+                        wit_parser::TypeDefKind::Resource => todo!(),
+                        wit_parser::TypeDefKind::Handle(_) => todo!(),
+                        wit_parser::TypeDefKind::Flags(_) => todo!(),
+                        wit_parser::TypeDefKind::Tuple(_) => todo!(),
+                        wit_parser::TypeDefKind::Variant(_) => todo!(),
+                        wit_parser::TypeDefKind::Enum(_) => todo!(),
+                        wit_parser::TypeDefKind::List(_) => todo!(),
+                        wit_parser::TypeDefKind::Future(_) => todo!(),
+                        wit_parser::TypeDefKind::Stream(_) => todo!(),
+                    },
+                };
+                return Cow::Owned(name);
             }
         };
-        Ok(Cow::Borrowed(str))
+        Cow::Borrowed(str)
     }
 
     pub fn imports_wasi(&self) -> bool {
