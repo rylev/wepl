@@ -38,17 +38,20 @@ impl Querier {
         }
     }
 
+    pub fn imported_function(&self, name: &str) -> anyhow::Result<&Function> {
+        let export = self.import(name)?;
+        match export {
+            wit_parser::WorldItem::Function(f) => Ok(f),
+            _ => anyhow::bail!("Unrecognized function '{name}'"),
+        }
+    }
+
     pub fn export(&self, name: &str) -> anyhow::Result<&WorldItem> {
-        self.world()
-            .exports
-            .iter()
-            .find_map(|(export_name, export)| {
-                let WorldKey::Name(n) = export_name else {
-                    return None;
-                };
-                (n == name).then_some(export)
-            })
-            .with_context(|| format!("no export with name '{name}'"))
+        get_world_item_by_name(self.world().exports.iter(), name)
+    }
+
+    pub fn import(&self, name: &str) -> anyhow::Result<&WorldItem> {
+        get_world_item_by_name(self.world().imports.iter(), name)
     }
 
     pub fn display_wit_type<'a>(&self, param_type: &wit_parser::Type) -> Cow<'a, str> {
@@ -172,4 +175,36 @@ impl Querier {
             .get(self.world_id)
             .expect("world_id is not found in the resolved wit package")
     }
+
+    pub(crate) fn check_dynamic_import(
+        &self,
+        func_name: &str,
+        component_bytes: &[u8],
+    ) -> anyhow::Result<()> {
+        let other = Self::from_bytes(component_bytes)?;
+        let import = self.imported_function(func_name)?;
+        let export = other.exported_function(func_name)?;
+        if import.params != export.params {
+            anyhow::bail!("params not equal")
+        }
+        if import.results != export.results {
+            anyhow::bail!("return values not equal")
+        }
+
+        Ok(())
+    }
+}
+
+fn get_world_item_by_name<'a>(
+    mut items: impl Iterator<Item = (&'a WorldKey, &'a WorldItem)>,
+    name: &str,
+) -> anyhow::Result<&'a WorldItem> {
+    items
+        .find_map(|(export_name, export)| {
+            let WorldKey::Name(n) = export_name else {
+                return None;
+            };
+            (n == name).then_some(export)
+        })
+        .with_context(|| format!("no export with name '{name}'"))
 }

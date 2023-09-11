@@ -186,7 +186,11 @@ impl<'a> Cmd<'a> {
                 let &[func_name, component] = args.as_slice() else {
                     bail!("wrong number of arguments. Expected 2 got {}", args.len())
                 };
-                runtime.stub_function(func_name.into(), component)?;
+
+                let component_bytes = std::fs::read(component)
+                    .with_context(|| format!("could not read component '{component}'"))?;
+                querier.check_dynamic_import(func_name, &component_bytes)?;
+                runtime.stub_function(func_name.into(), &component_bytes)?;
             }
 
             Cmd::BuiltIn { name, args: _ } => {
