@@ -9,6 +9,7 @@ use wit_parser::FunctionKind;
 use super::wit::Querier;
 
 pub struct Runtime {
+    engine: Engine,
     store: Store<Context>,
     instance: Instance,
     linker: Linker<Context>,
@@ -50,6 +51,7 @@ impl Runtime {
         let instance = pre.instantiate_async(&mut store).await?;
 
         Ok(Self {
+            engine,
             store,
             instance,
             linker,
@@ -75,13 +77,24 @@ impl Runtime {
         Ok(results)
     }
 
-    pub fn stub(&mut self) -> anyhow::Result<()> {
+    pub async fn stub(&mut self) -> anyhow::Result<()> {
         self.linker
             .root()
             .func_new(&self.component, "get-string", |_ctx, _args, ret| {
                 ret[0] = Val::String(String::from("wow").into());
                 Ok(())
             })?;
+        self.refresh().await?;
+        Ok(())
+    }
+
+    /// Get a new instance
+    pub async fn refresh(&mut self) -> anyhow::Result<()> {
+        self.store = build_store(&self.engine);
+        self.instance = self
+            .linker
+            .instantiate_async(&mut self.store, &self.component)
+            .await?;
         Ok(())
     }
 }

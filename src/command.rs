@@ -187,7 +187,7 @@ impl<'a> Cmd<'a> {
                 name: "broken",
                 args: _,
             } => {
-                runtime.stub()?;
+                runtime.stub().await?;
             }
 
             Cmd::BuiltIn { name, args: _ } => {

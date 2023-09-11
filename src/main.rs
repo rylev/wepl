@@ -2,6 +2,7 @@ mod command;
 mod runtime;
 mod wit;
 
+use anyhow::Context as _;
 use clap::Parser;
 use rustyline::error::ReadlineError;
 
@@ -46,6 +47,11 @@ async fn _main() -> anyhow::Result<()> {
                         if let Err(e) = cmd.run(&mut runtime, &querier).await {
                             print_error_prefix();
                             eprintln!("{e}");
+                            // Refresh the runtime on error so we start fresh
+                            runtime
+                                .refresh()
+                                .await
+                                .context("error refreshing wasm runtime")?;
                         }
                     }
                     Err(e) => eprintln!("Error parsing input: {e}"),
