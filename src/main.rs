@@ -6,9 +6,8 @@ use anyhow::Context as _;
 use clap::Parser;
 use rustyline::error::ReadlineError;
 
-#[tokio::main]
-async fn main() {
-    if let Err(e) = _main().await {
+fn main() {
+    if let Err(e) = _main() {
         print_error_prefix();
         eprintln!("{e}");
         if e.source().is_some() {
@@ -20,7 +19,7 @@ async fn main() {
     }
 }
 
-async fn _main() -> anyhow::Result<()> {
+fn _main() -> anyhow::Result<()> {
     env_logger::init();
 
     let cli = Cli::parse();
@@ -29,8 +28,7 @@ async fn _main() -> anyhow::Result<()> {
     let mut runtime = runtime::Runtime::init(&component_bytes, &querier, |import_name| {
         print_error_prefix();
         eprintln!("unimplemented import: {import_name}");
-    })
-    .await?;
+    })?;
 
     let mut rl = rustyline::DefaultEditor::new()?;
     if let Some(home) = home::home_dir() {
@@ -44,14 +42,11 @@ async fn _main() -> anyhow::Result<()> {
                 let line = command::Cmd::parse(&line);
                 match line {
                     Ok(cmd) => {
-                        if let Err(e) = cmd.run(&mut runtime, &querier).await {
+                        if let Err(e) = cmd.run(&mut runtime, &querier) {
                             print_error_prefix();
                             eprintln!("{e}");
                             // Refresh the runtime on error so we start fresh
-                            runtime
-                                .refresh()
-                                .await
-                                .context("error refreshing wasm runtime")?;
+                            runtime.refresh().context("error refreshing wasm runtime")?;
                         }
                     }
                     Err(e) => eprintln!("Error parsing input: {e}"),

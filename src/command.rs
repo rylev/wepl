@@ -25,7 +25,7 @@ impl<'a> Cmd<'a> {
             let mut ident_parser = delimited(multispace0, ident_parser, multispace0);
             let (rest, ident) = ident_parser(input)?;
             let args = rest
-                .split(',')
+                .split(' ')
                 .map(|a| a.trim())
                 .filter(|a| !a.is_empty())
                 .collect();
@@ -65,7 +65,7 @@ impl<'a> Cmd<'a> {
         Ok(Cmd::CallFunction { name, args })
     }
 
-    pub async fn run(&self, runtime: &mut Runtime, querier: &Querier) -> anyhow::Result<()> {
+    pub fn run(&self, runtime: &mut Runtime, querier: &Querier) -> anyhow::Result<()> {
         match self {
             Cmd::CallFunction { name, args } => {
                 log::debug!("Calling function: {name} with args: {args:?}");
@@ -104,9 +104,8 @@ impl<'a> Cmd<'a> {
                     parsed_args.push(parsed_arg)
                 }
 
-                let results = runtime
-                    .call_func(&func_def.name, &parsed_args, func_def.results.len())
-                    .await?;
+                let results =
+                    runtime.call_func(&func_def.name, &parsed_args, func_def.results.len())?;
                 println!(
                     "{}",
                     results
@@ -183,11 +182,11 @@ impl<'a> Cmd<'a> {
                     println!("{import_name}: {import_type}");
                 }
             }
-            Cmd::BuiltIn {
-                name: "broken",
-                args: _,
-            } => {
-                runtime.stub().await?;
+            Cmd::BuiltIn { name: "link", args } => {
+                let &[func_name, component] = args.as_slice() else {
+                    bail!("wrong number of arguments. Expected 2 got {}", args.len())
+                };
+                runtime.stub_function(func_name.into(), component)?;
             }
 
             Cmd::BuiltIn { name, args: _ } => {
