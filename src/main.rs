@@ -42,11 +42,17 @@ fn _main() -> anyhow::Result<()> {
                 let line = command::Cmd::parse(&line);
                 match line {
                     Ok(cmd) => {
-                        if let Err(e) = cmd.run(&mut runtime, &querier) {
-                            print_error_prefix();
-                            eprintln!("{e}");
-                            // Refresh the runtime on error so we start fresh
-                            runtime.refresh().context("error refreshing wasm runtime")?;
+                        match cmd.run(&mut runtime, &querier) {
+                            Err(e) => {
+                                print_error_prefix();
+                                eprintln!("{e}");
+                                // Refresh the runtime on error so we start fresh
+                                runtime.refresh().context("error refreshing wasm runtime")?;
+                            }
+                            Ok(true) => {
+                                let _ = rl.clear_screen();
+                            }
+                            _ => {}
                         }
                     }
                     Err(e) => eprintln!("Error parsing input: {e}"),

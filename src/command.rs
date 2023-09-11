@@ -65,7 +65,10 @@ impl<'a> Cmd<'a> {
         Ok(Cmd::CallFunction { name, args })
     }
 
-    pub fn run(&self, runtime: &mut Runtime, querier: &Querier) -> anyhow::Result<()> {
+    /// Run the command
+    ///
+    /// Returns `Ok(true)` if the screen should be cleared
+    pub fn run(&self, runtime: &mut Runtime, querier: &Querier) -> anyhow::Result<bool> {
         match self {
             Cmd::CallFunction { name, args } => {
                 log::debug!("Calling function: {name} with args: {args:?}");
@@ -193,11 +196,15 @@ impl<'a> Cmd<'a> {
                 runtime.stub_function(func_name.into(), &component_bytes)?;
             }
 
+            Cmd::BuiltIn {
+                name: "clear",
+                args: _,
+            } => return Ok(true),
             Cmd::BuiltIn { name, args: _ } => {
                 bail!("Unrecognized built-in function '{name}'")
             }
         }
-        Ok(())
+        Ok(false)
     }
 }
 

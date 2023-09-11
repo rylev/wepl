@@ -88,9 +88,9 @@ impl Runtime {
     pub fn stub_function(&mut self, name: String, component_bytes: &[u8]) -> anyhow::Result<()> {
         let component = load_component(&self.engine, &component_bytes)?;
         let mut linker = Linker::<ImportImplsContext>::new(&self.engine);
+        wasmtime_wasi::preview2::command::sync::add_to_linker(&mut linker)?;
         let instance =
             linker.instantiate(&mut *self.import_impls.store.lock().unwrap(), &component)?;
-        wasmtime_wasi::preview2::command::sync::add_to_linker(&mut linker)?;
         let func = instance
             .get_func(&mut *self.import_impls.store.lock().unwrap(), &name)
             .unwrap();
