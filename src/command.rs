@@ -1,95 +1,72 @@
 mod parser;
-use anyhow::{anyhow, bail, Context as _};
+use std::collections::HashMap;
+
+use anyhow::{anyhow, bail, ensure, Context as _};
 use wasmtime::component::Val;
 
 use super::runtime::Runtime;
 use super::wit::Querier;
 
 pub enum Cmd<'a> {
-    BuiltIn { name: &'a str, args: Vec<&'a str> },
-    CallFunction { name: &'a str, args: Vec<String> },
+    BuiltIn {
+        name: &'a str,
+        args: Vec<&'a str>,
+    },
+    Eval(parser::Expr<'a>),
+    Assign {
+        ident: &'a str,
+        value: parser::Expr<'a>,
+    },
 }
 
 impl<'a> Cmd<'a> {
     pub fn parse(s: &'a str) -> anyhow::Result<Cmd<'a>> {
         let s = s.trim();
 
-        if let Some(builtin) = s.strip_prefix('.') {
-            match parser::builtin(builtin) {
-                Ok((_, (name, args))) => return Ok(Cmd::BuiltIn { name, args }),
-                _ => bail!("could not parse call to built-in function: {builtin}"),
-            }
-        }
-
-        if let Some(export) = s.strip_prefix('?') {
-            let export = export.trim();
-            if export.contains(char::is_whitespace) {
-                bail!("invalid export name '{export}'. Identifiers can't contain whitespace");
-            }
-            return Ok(Self::BuiltIn {
-                name: "inspect",
-                args: vec![export],
-            });
-        }
-
         // try to parse a function
-        let (_, (name, args)) = parser::function_call(s).map_err(|e| anyhow!("{e}"))?;
-
-        Ok(Cmd::CallFunction { name, args })
+        let (_, line) = parser::Line::parse(s).map_err(|e| anyhow!("{e}"))?;
+        log::debug!("Parsed line: {line:?}");
+        match line {
+            parser::Line::Expr(expr) => Ok(Cmd::Eval(expr)),
+            parser::Line::Assignment(ident, value) => Ok(Cmd::Assign { ident, value }),
+            parser::Line::Builtin(name, args) => Ok(Cmd::BuiltIn { name, args }),
+        }
     }
 
     /// Run the command
     ///
     /// Returns `Ok(true)` if the screen should be cleared
-    pub fn run(&self, runtime: &mut Runtime, querier: &Querier) -> anyhow::Result<bool> {
+    pub fn run(
+        self,
+        runtime: &mut Runtime,
+        querier: &Querier,
+        scope: &mut HashMap<String, Val>,
+    ) -> anyhow::Result<bool> {
         match self {
-            Cmd::CallFunction { name, args } => {
-                log::debug!("Calling function: {name} with args: {args:?}");
-                let func_def = querier.exported_function(name)?;
-                let mut parsed_args = Vec::with_capacity(func_def.params.len());
-                if func_def.params.len() != args.len() {
-                    bail!(
-                        "tried to call a function that has {} params with {} args",
-                        func_def.params.len(),
-                        args.len()
+            Cmd::Eval(expr) => match expr {
+                parser::Expr::Literal(l) => {
+                    let val = literal_to_val(l, None);
+                    println!("{}: {}", format_val(&val), val_as_type(&val));
+                }
+                parser::Expr::Ident(i) => {
+                    let val = lookup_in_scope(scope, i)?;
+                    println!("{}: {}", format_val(&val), val_as_type(&val))
+                }
+                parser::Expr::FunctionCall(name, args) => {
+                    let results = call_func(runtime, querier, &*scope, name, args)?;
+                    println!(
+                        "{}",
+                        results
+                            .into_iter()
+                            .map(|v| format!("{}: {}", format_val(&v), val_as_type(&v)))
+                            .collect::<Vec<_>>()
+                            .join(", ")
                     )
                 }
-                for ((param_name, param_type), arg) in func_def.params.iter().zip(args) {
-                    let parsed_arg = match param_type {
-                        wit_parser::Type::U8 => arg.parse::<u8>().map(Val::U8).map_err(Into::into),
-                        wit_parser::Type::U16 => {
-                            arg.parse::<u16>().map(Val::U16).map_err(Into::into)
-                        }
-                        wit_parser::Type::U32 => {
-                            arg.parse::<u32>().map(Val::U32).map_err(Into::into)
-                        }
-                        wit_parser::Type::U64 => {
-                            arg.parse::<u64>().map(Val::U64).map_err(Into::into)
-                        }
-                        wit_parser::Type::String => {
-                            parse_string(arg).map(|s| Val::String(s.to_owned().into_boxed_str()))
-                        }
-                        p => todo!("handle params of type {p:?}"),
-                    }
-                    .map_err(|e| {
-                        anyhow!(
-                            "could not parse argument {param_name} as {} to function: {e}",
-                            querier.display_wit_type(param_type)
-                        )
-                    })?;
-                    parsed_args.push(parsed_arg)
-                }
-
-                let results =
-                    runtime.call_func(&func_def.name, &parsed_args, func_def.results.len())?;
-                println!(
-                    "{}",
-                    results
-                        .into_iter()
-                        .map(|v| format_val(&v))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )
+            },
+            Cmd::Assign { ident, value } => {
+                let value = eval(runtime, querier, scope, value, None)?;
+                scope.insert(ident.to_owned(), value);
             }
             Cmd::BuiltIn {
                 name: "exports",
@@ -115,28 +92,10 @@ impl<'a> Cmd<'a> {
                         args.len()
                     )
                 };
-                let export = querier.export(name)?;
-                match export {
-                    wit_parser::WorldItem::Interface(_) => todo!(),
-                    wit_parser::WorldItem::Function(f) => {
-                        let name = &f.name;
-                        let mut params = Vec::new();
-                        for (param_name, param_type) in &f.params {
-                            let ty = querier.display_wit_type(param_type);
-                            params.push(format!("{param_name}: {ty}"));
-                        }
-                        let params = params.join(", ");
-                        let rets = match &f.results {
-                            wit_parser::Results::Anon(t) => {
-                                let t = querier.display_wit_type(t);
-                                format!(" -> {t}")
-                            }
-                            wit_parser::Results::Named(_) => todo!(),
-                        };
-                        println!("{name}: func({params}){rets}")
-                    }
-                    wit_parser::WorldItem::Type(_) => todo!(),
-                }
+                let export = querier
+                    .export(name)
+                    .with_context(|| format!("no export with name '{name}'"))?;
+                print_world_item(export, querier);
             }
             Cmd::BuiltIn {
                 name: "imports",
@@ -181,14 +140,126 @@ impl<'a> Cmd<'a> {
     }
 }
 
-fn parse_string(arg: &str) -> anyhow::Result<&str> {
-    let Some(arg) = arg.strip_prefix('"') else {
-        bail!("missing open quote")
-    };
-    let Some(arg) = arg.strip_suffix('"') else {
-        bail!("missing end quote")
-    };
-    Ok(arg)
+fn eval<'a>(
+    runtime: &mut Runtime,
+    querier: &Querier,
+    scope: &HashMap<String, Val>,
+    expr: parser::Expr<'a>,
+    preferred_type: Option<&wit_parser::Type>,
+) -> anyhow::Result<Val> {
+    match expr {
+        parser::Expr::Literal(l) => Ok(literal_to_val(l, preferred_type)),
+        parser::Expr::Ident(n) => lookup_in_scope(scope, n),
+        parser::Expr::FunctionCall(name, args) => {
+            let mut results = call_func(runtime, querier, scope, name, args)?;
+            if results.len() != 1 {
+                bail!(
+                    "Expected function '{name}'to return one result but got {}",
+                    results.len()
+                )
+            }
+            Ok(results.remove(0))
+        }
+    }
+}
+
+fn lookup_in_scope(scope: &HashMap<String, Val>, ident: &str) -> anyhow::Result<Val> {
+    scope
+        .get(ident)
+        .with_context(|| format!("no identifier '{ident}' in scope"))
+        .cloned()
+}
+
+fn call_func<'a>(
+    runtime: &mut Runtime,
+    querier: &Querier,
+    scope: &HashMap<String, Val>,
+    name: &str,
+    args: Vec<parser::Expr<'a>>,
+) -> anyhow::Result<Vec<Val>> {
+    log::debug!("Calling function: {name} with args: {args:?}");
+    let func_def = querier
+        .exported_function(name)
+        .with_context(|| format!("no export with name '{name}'"))?;
+    let mut evaled_args = Vec::with_capacity(func_def.params.len());
+    if func_def.params.len() != args.len() {
+        bail!(
+            "tried to call a function that has {} params with {} args",
+            func_def.params.len(),
+            args.len()
+        )
+    }
+    for ((param_name, param_type), arg) in func_def.params.iter().zip(args) {
+        let evaled_arg = eval(runtime, querier, scope, arg, Some(param_type))?;
+        match param_type {
+            wit_parser::Type::Bool => todo!(),
+            wit_parser::Type::U8 => {
+                ensure!(
+                    matches!(evaled_arg, Val::U8(_)),
+                    "arg '{}' type mismatch: expected value of type u8 got {}",
+                    param_name,
+                    querier.display_wit_type(param_type)
+                );
+            }
+            wit_parser::Type::U16 => todo!(),
+            wit_parser::Type::U32 => todo!(),
+            wit_parser::Type::U64 => todo!(),
+            wit_parser::Type::S8 => todo!(),
+            wit_parser::Type::S16 => todo!(),
+            wit_parser::Type::S32 => todo!(),
+            wit_parser::Type::S64 => todo!(),
+            wit_parser::Type::Float32 => todo!(),
+            wit_parser::Type::Float64 => todo!(),
+            wit_parser::Type::Char => todo!(),
+            wit_parser::Type::String => {
+                ensure!(
+                    matches!(evaled_arg, Val::String(_)),
+                    "arg '{}' type mismatch: expected value of type {} got {}",
+                    param_name,
+                    querier.display_wit_type(param_type),
+                    val_as_type(&evaled_arg)
+                );
+            }
+            wit_parser::Type::Id(_) => todo!(),
+        }
+        evaled_args.push(evaled_arg);
+    }
+    let results = runtime.call_func(&func_def.name, &evaled_args, func_def.results.len())?;
+    Ok(results)
+}
+
+fn literal_to_val(l: parser::Literal<'_>, preferred_type: Option<&wit_parser::Type>) -> Val {
+    match l {
+        parser::Literal::String(s) => Val::String(s.to_owned().into()),
+        parser::Literal::Num(n) => match preferred_type {
+            Some(wit_parser::Type::U8) => Val::U8(n.try_into().unwrap()),
+            _ => Val::S32(n.try_into().unwrap()),
+        },
+    }
+}
+
+fn print_world_item(item: &wit_parser::WorldItem, querier: &Querier) {
+    match item {
+        wit_parser::WorldItem::Function(f) => {
+            let name = &f.name;
+            let mut params = Vec::new();
+            for (param_name, param_type) in &f.params {
+                let ty = querier.display_wit_type(param_type);
+                params.push(format!("{param_name}: {ty}"));
+            }
+            let params = params.join(", ");
+            let rets = match &f.results {
+                wit_parser::Results::Anon(t) => {
+                    let t = querier.display_wit_type(t);
+                    format!(" -> {t}")
+                }
+                wit_parser::Results::Named(_) => todo!(),
+            };
+            println!("{name}: func({params}){rets}")
+        }
+        wit_parser::WorldItem::Interface(_) => todo!(),
+        wit_parser::WorldItem::Type(_) => todo!(),
+    }
 }
 
 fn format_val(val: &Val) -> String {
@@ -216,6 +287,33 @@ fn format_val(val: &Val) -> String {
             Err(Some(e)) => format!("Err({})", format_val(e)),
             Err(None) => "Err".to_string(),
         },
+        Val::List(_) => todo!(),
+        Val::Record(_) => todo!(),
+        Val::Tuple(_) => todo!(),
+        Val::Variant(_) => todo!(),
+        Val::Enum(_) => todo!(),
+        Val::Flags(_) => todo!(),
+        Val::Resource(_) => todo!(),
+    }
+}
+
+fn val_as_type(val: &Val) -> &'static str {
+    match val {
+        Val::String(_) => "string",
+        Val::Bool(_) => "bool",
+        Val::U8(_) => "u8",
+        Val::U16(_) => "u16",
+        Val::U32(_) => "u32",
+        Val::U64(_) => "u64",
+        Val::S8(_) => "s8",
+        Val::S16(_) => "s16",
+        Val::S32(_) => "s32",
+        Val::S64(_) => "s64",
+        Val::Float32(_) => "float32",
+        Val::Float64(_) => "float64",
+        Val::Char(_) => "char",
+        Val::Option(_) => "option",
+        Val::Result(_) => "result",
         Val::List(_) => todo!(),
         Val::Record(_) => todo!(),
         Val::Tuple(_) => todo!(),

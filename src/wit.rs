@@ -30,27 +30,27 @@ impl Querier {
         Ok(Self::new(resolve, world))
     }
 
-    pub fn exported_function(&self, name: &str) -> anyhow::Result<&Function> {
+    pub fn exported_function(&self, name: &str) -> Option<&Function> {
         let export = self.export(name)?;
         match export {
-            wit_parser::WorldItem::Function(f) => Ok(f),
-            _ => anyhow::bail!("Unrecognized function '{name}'"),
+            wit_parser::WorldItem::Function(f) => Some(f),
+            _ => None,
         }
     }
 
-    pub fn imported_function(&self, name: &str) -> anyhow::Result<&Function> {
+    pub fn imported_function(&self, name: &str) -> Option<&Function> {
         let export = self.import(name)?;
         match export {
-            wit_parser::WorldItem::Function(f) => Ok(f),
-            _ => anyhow::bail!("Unrecognized function '{name}'"),
+            wit_parser::WorldItem::Function(f) => Some(f),
+            _ => None,
         }
     }
 
-    pub fn export(&self, name: &str) -> anyhow::Result<&WorldItem> {
+    pub fn export(&self, name: &str) -> Option<&WorldItem> {
         get_world_item_by_name(self.world().exports.iter(), name)
     }
 
-    pub fn import(&self, name: &str) -> anyhow::Result<&WorldItem> {
+    pub fn import(&self, name: &str) -> Option<&WorldItem> {
         get_world_item_by_name(self.world().imports.iter(), name)
     }
 
@@ -182,8 +182,12 @@ impl Querier {
         component_bytes: &[u8],
     ) -> anyhow::Result<()> {
         let other = Self::from_bytes(component_bytes)?;
-        let import = self.imported_function(func_name)?;
-        let export = other.exported_function(func_name)?;
+        let import = self
+            .imported_function(func_name)
+            .with_context(|| format!("no import with name '{func_name}'"))?;
+        let export = other
+            .exported_function(func_name)
+            .with_context(|| format!("no export with name '{func_name}'"))?;
         if import.params != export.params {
             anyhow::bail!("params not equal")
         }
@@ -198,13 +202,11 @@ impl Querier {
 fn get_world_item_by_name<'a>(
     mut items: impl Iterator<Item = (&'a WorldKey, &'a WorldItem)>,
     name: &str,
-) -> anyhow::Result<&'a WorldItem> {
-    items
-        .find_map(|(export_name, export)| {
-            let WorldKey::Name(n) = export_name else {
-                return None;
-            };
-            (n == name).then_some(export)
-        })
-        .with_context(|| format!("no export with name '{name}'"))
+) -> Option<&'a WorldItem> {
+    items.find_map(|(export_name, export)| {
+        let WorldKey::Name(n) = export_name else {
+            return None;
+        };
+        (n == name).then_some(export)
+    })
 }

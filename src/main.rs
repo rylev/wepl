@@ -2,6 +2,8 @@ mod command;
 mod runtime;
 mod wit;
 
+use std::collections::HashMap;
+
 use anyhow::Context as _;
 use clap::Parser;
 use rustyline::error::ReadlineError;
@@ -34,6 +36,7 @@ fn _main() -> anyhow::Result<()> {
     if let Some(home) = home::home_dir() {
         let _ = rl.load_history(&home.join(".weplhistory"));
     }
+    let mut scope = HashMap::default();
     loop {
         let readline = rl.readline("> ");
         match readline {
@@ -42,7 +45,7 @@ fn _main() -> anyhow::Result<()> {
                 let line = command::Cmd::parse(&line);
                 match line {
                     Ok(cmd) => {
-                        match cmd.run(&mut runtime, &querier) {
+                        match cmd.run(&mut runtime, &querier, &mut scope) {
                             Err(e) => {
                                 print_error_prefix();
                                 eprintln!("{e}");
