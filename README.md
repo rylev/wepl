@@ -7,11 +7,12 @@ The WebAssembly Component repl.
 ```bash
 $ wepl mycomponent.wasm
 > .exports
-hello-world: function
-uppercase: function
-> ?uppercase
-uppercase: func(input: String) -> String
-> uppercase("hello")
+uppercase: func(input: string) -> string
+> uppercase
+uppercase: func(input: string) -> string
+> s = "hello"
+s: string
+> uppercase(s)
 "HELLO"
 ```
 
@@ -29,4 +30,6 @@ Supported functions include:
 
 * Exported function evaluation
 * Listing imports and exports
+* Variable assignment
+* Type checking
 * Satisfying imports with other WebAssembly Components

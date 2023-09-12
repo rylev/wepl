@@ -48,10 +48,23 @@ impl<'a> Cmd<'a> {
                     let val = literal_to_val(l, None);
                     println!("{}: {}", format_val(&val), val_as_type(&val));
                 }
-                parser::Expr::Ident(i) => {
-                    let val = lookup_in_scope(scope, i)?;
-                    println!("{}: {}", format_val(&val), val_as_type(&val))
-                }
+                parser::Expr::Ident(ident) => match scope.get(ident) {
+                    Some(val) => {
+                        println!("{}: {}", format_val(val), val_as_type(val))
+                    }
+                    None => {
+                        let item = querier.export(ident).or_else(|| querier.import(ident));
+                        match item {
+                            Some(item) => {
+                                let typ = format_world_item(item, querier);
+                                println!("{ident}: {typ}");
+                            }
+                            None => {
+                                anyhow::bail!("no identifier '{ident}' in scope")
+                            }
+                        }
+                    }
+                },
                 parser::Expr::FunctionCall(name, args) => {
                     let results = call_func(runtime, querier, &*scope, name, args)?;
                     println!(
@@ -65,21 +78,40 @@ impl<'a> Cmd<'a> {
                 }
             },
             Cmd::Assign { ident, value } => {
-                let value = eval(runtime, querier, scope, value, None)?;
-                scope.insert(ident.to_owned(), value);
+                let val = eval(runtime, querier, scope, value, None)?;
+                println!("{}: {}", ident, val_as_type(&val));
+                scope.insert(ident.to_owned(), val);
             }
             Cmd::BuiltIn {
                 name: "exports",
-                args: _,
+                args,
             } => {
+                let &[] = args.as_slice() else {
+                    bail!(
+                        "wrong number of arguments to imports function. Expected 0 got {}",
+                        args.len()
+                    )
+                };
                 for (export_name, export) in querier.world().exports.iter() {
                     let export_name = querier.world_item_name(export_name)?;
-                    let export_type = match export {
-                        wit_parser::WorldItem::Interface(_) => "interface",
-                        wit_parser::WorldItem::Function(_) => "function",
-                        wit_parser::WorldItem::Type(_) => "type",
-                    };
-                    println!("{export_name}: {export_type}");
+                    let typ = format_world_item(export, querier);
+                    println!("{export_name}: {typ}");
+                }
+            }
+            Cmd::BuiltIn {
+                name: "imports",
+                args,
+            } => {
+                let &[] = args.as_slice() else {
+                    bail!(
+                        "wrong number of arguments to imports function. Expected 0 got {}",
+                        args.len()
+                    )
+                };
+                for (import_name, import) in querier.world().imports.iter() {
+                    let import_name = querier.world_item_name(import_name)?;
+                    let typ = format_world_item(import, querier);
+                    println!("{import_name}: {typ}");
                 }
             }
             Cmd::BuiltIn {
@@ -95,27 +127,8 @@ impl<'a> Cmd<'a> {
                 let export = querier
                     .export(name)
                     .with_context(|| format!("no export with name '{name}'"))?;
-                print_world_item(export, querier);
-            }
-            Cmd::BuiltIn {
-                name: "imports",
-                args,
-            } => {
-                let &[] = args.as_slice() else {
-                    bail!(
-                        "wrong number of arguments to imports function. Expected 0 got {}",
-                        args.len()
-                    )
-                };
-                for (import_name, import) in querier.world().imports.iter() {
-                    let import_name = querier.world_item_name(import_name)?;
-                    let import_type = match import {
-                        wit_parser::WorldItem::Interface(_) => "interface",
-                        wit_parser::WorldItem::Function(_) => "function",
-                        wit_parser::WorldItem::Type(_) => "type",
-                    };
-                    println!("{import_name}: {import_type}");
-                }
+                let typ = format_world_item(export, querier);
+                println!("{name}: {typ}");
             }
             Cmd::BuiltIn { name: "link", args } => {
                 let &[func_name, component] = args.as_slice() else {
@@ -127,7 +140,6 @@ impl<'a> Cmd<'a> {
                 querier.check_dynamic_import(func_name, &component_bytes)?;
                 runtime.stub_function(func_name.into(), &component_bytes)?;
             }
-
             Cmd::BuiltIn {
                 name: "clear",
                 args: _,
@@ -238,10 +250,9 @@ fn literal_to_val(l: parser::Literal<'_>, preferred_type: Option<&wit_parser::Ty
     }
 }
 
-fn print_world_item(item: &wit_parser::WorldItem, querier: &Querier) {
+fn format_world_item(item: &wit_parser::WorldItem, querier: &Querier) -> String {
     match item {
         wit_parser::WorldItem::Function(f) => {
-            let name = &f.name;
             let mut params = Vec::new();
             for (param_name, param_type) in &f.params {
                 let ty = querier.display_wit_type(param_type);
@@ -255,10 +266,10 @@ fn print_world_item(item: &wit_parser::WorldItem, querier: &Querier) {
                 }
                 wit_parser::Results::Named(_) => todo!(),
             };
-            println!("{name}: func({params}){rets}")
+            format!("func({params}){rets}")
         }
-        wit_parser::WorldItem::Interface(_) => todo!(),
-        wit_parser::WorldItem::Type(_) => todo!(),
+        wit_parser::WorldItem::Interface(_) => "interface".into(),
+        wit_parser::WorldItem::Type(_) => "type".into(),
     }
 }
 
