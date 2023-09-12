@@ -2,7 +2,7 @@ use std::borrow::Cow;
 
 use anyhow::Context;
 use wit_component::DecodedWasm;
-use wit_parser::{Function, Resolve, World, WorldId, WorldItem, WorldKey};
+use wit_parser::{Function, InterfaceId, Resolve, World, WorldId, WorldItem, WorldKey};
 
 pub struct Querier {
     resolve: Resolve,
@@ -21,7 +21,7 @@ impl Querier {
     }
 
     pub fn from_bytes(component_bytes: &[u8]) -> anyhow::Result<Self> {
-        let (resolve, world) = match wit_component::decode(&component_bytes)
+        let (resolve, world) = match wit_component::decode(component_bytes)
             .context("could not decode given file as a WebAssembly component")?
         {
             DecodedWasm::Component(r, w) => (r, w),
@@ -52,6 +52,10 @@ impl Querier {
 
     pub fn import(&self, name: &str) -> Option<&WorldItem> {
         get_world_item_by_name(self.world().imports.iter(), name)
+    }
+
+    pub fn interface(&self, id: InterfaceId) -> Option<&wit_parser::Interface> {
+        self.resolve.interfaces.get(id)
     }
 
     pub fn display_wit_type<'a>(&self, param_type: &wit_parser::Type) -> Cow<'a, str> {
@@ -87,7 +91,7 @@ impl Querier {
                             match (ok, err) {
                                 (Some(ok), Some(err)) => format!("result<{ok}, {err}>"),
                                 (Some(t), _) | (_, Some(t)) => format!("result<{t}>"),
-                                _ => format!("result"),
+                                _ => "result".into(),
                             }
                         }
                         wit_parser::TypeDefKind::Type(t) => return self.display_wit_type(t),
@@ -132,22 +136,16 @@ impl Querier {
             .imports
             .iter()
             .filter_map(|(import_name, import)| {
-                let import_name = match import_name {
-                    WorldKey::Name(n) => n.clone(),
-                    WorldKey::Interface(i) => {
-                        let interface = self.resolve.interfaces.get(*i).unwrap();
-                        match &interface.package {
-                            Some(package_id) => {
-                                let package = self.resolve.packages.get(*package_id).unwrap();
-                                if package.name.namespace == "wasi" {
-                                    return None;
-                                }
-                                format!("{}", package.name)
-                            }
-                            None => todo!(),
+                if let WorldKey::Interface(i) = import_name {
+                    let interface = self.resolve.interfaces.get(*i).unwrap();
+                    if let Some(package_id) = &interface.package {
+                        let package = self.resolve.packages.get(*package_id).unwrap();
+                        if package.name.namespace == "wasi" {
+                            return None;
                         }
                     }
-                };
+                }
+                let import_name = self.resolve.name_world_key(import_name);
                 Some((import_name, import))
             })
     }

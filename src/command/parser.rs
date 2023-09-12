@@ -75,14 +75,14 @@ impl<'a> Literal<'a> {
     }
 }
 
-fn assignment<'a>(input: &'a str) -> nom::IResult<&str, (&str, Expr<'a>)> {
+fn assignment(input: &str) -> nom::IResult<&str, (&str, Expr<'_>)> {
     let (rest, ident) = ident(input)?;
     let (rest, _) = delimited(multispace0, tag("="), multispace0)(rest)?;
     let (r, value) = cut(Expr::parse)(rest)?;
     Ok((r, (ident, value)))
 }
 
-pub fn function_call<'a>(input: &'a str) -> nom::IResult<&str, (&str, Vec<Expr<'a>>)> {
+pub fn function_call(input: &str) -> nom::IResult<&str, (&str, Vec<Expr<'_>>)> {
     let (rest, ident) = ident(input)?;
     let args = separated_list0(tag(","), Expr::parse);
     let (rest, args) = delimited(tag("("), args, tag(")"))(rest)?;

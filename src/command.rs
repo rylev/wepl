@@ -39,7 +39,7 @@ impl<'a> Cmd<'a> {
     pub fn run(
         self,
         runtime: &mut Runtime,
-        querier: &Querier,
+        querier: &mut Querier,
         scope: &mut HashMap<String, Val>,
     ) -> anyhow::Result<bool> {
         match self {
@@ -143,6 +143,7 @@ impl<'a> Cmd<'a> {
                 let adapter =
                     std::fs::read(path).context("could not read path to adapter module")?;
                 runtime.compose(&adapter)?;
+                *querier = Querier::from_bytes(runtime.component_bytes())?;
             }
             Cmd::BuiltIn { name: "link", args } => {
                 let &[func_name, component] = args.as_slice() else {
@@ -166,11 +167,11 @@ impl<'a> Cmd<'a> {
     }
 }
 
-fn eval<'a>(
+fn eval(
     runtime: &mut Runtime,
     querier: &Querier,
     scope: &HashMap<String, Val>,
-    expr: parser::Expr<'a>,
+    expr: parser::Expr<'_>,
     preferred_type: Option<&wit_parser::Type>,
 ) -> anyhow::Result<Val> {
     match expr {
@@ -196,12 +197,12 @@ fn lookup_in_scope(scope: &HashMap<String, Val>, ident: &str) -> anyhow::Result<
         .cloned()
 }
 
-fn call_func<'a>(
+fn call_func(
     runtime: &mut Runtime,
     querier: &Querier,
     scope: &HashMap<String, Val>,
     name: &str,
-    args: Vec<parser::Expr<'a>>,
+    args: Vec<parser::Expr<'_>>,
 ) -> anyhow::Result<Vec<Val>> {
     log::debug!("Calling function: {name} with args: {args:?}");
     let func_def = querier

@@ -45,6 +45,19 @@ impl Runtime {
                             Ok(())
                         })?;
                 }
+                wit_parser::WorldItem::Interface(i) => {
+                    let interface = querier.interface(*i).unwrap();
+                    let mut root = linker.root();
+                    let mut instance = root.instance(&import_name)?;
+                    for (_, f) in interface.functions.iter() {
+                        let stub_import = stub_import.clone();
+                        let import_name = import_name.clone();
+                        instance.func_new(&component, &f.name, move |_ctx, _args, _rets| {
+                            stub_import(&import_name);
+                            Ok(())
+                        })?;
+                    }
+                }
                 i => todo!("Implement import: {i:?}"),
             }
         }
@@ -87,7 +100,7 @@ impl Runtime {
     /// This function does not check that the component in `components_bytes` has the
     /// export needed and that it doesn't have any non-wasi imports.
     pub fn stub_function(&mut self, name: String, component_bytes: &[u8]) -> anyhow::Result<()> {
-        let component = load_component(&self.engine, &component_bytes)?;
+        let component = load_component(&self.engine, component_bytes)?;
         let mut linker = Linker::<ImportImplsContext>::new(&self.engine);
         wasmtime_wasi::preview2::command::sync::add_to_linker(&mut linker)?;
         let instance =
@@ -132,6 +145,10 @@ impl Runtime {
         )
         .compose()?;
         self.set_component(bytes)
+    }
+
+    pub fn component_bytes(&self) -> &[u8] {
+        &self.component.1
     }
 
     /// Get a new instance
