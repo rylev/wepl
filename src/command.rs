@@ -2,6 +2,7 @@ mod parser;
 use std::collections::HashMap;
 
 use anyhow::{anyhow, bail, ensure, Context as _};
+use colored::Colorize;
 use wasmtime::component::Val;
 
 use super::runtime::Runtime;
@@ -20,16 +21,22 @@ pub enum Cmd<'a> {
 }
 
 impl<'a> Cmd<'a> {
-    pub fn parse(s: &'a str) -> anyhow::Result<Cmd<'a>> {
+    pub fn parse(s: &'a str) -> anyhow::Result<Option<Cmd<'a>>> {
         let s = s.trim();
+        if s.is_empty() {
+            return Ok(None);
+        }
 
         // try to parse a function
-        let (_, line) = parser::Line::parse(s).map_err(|e| anyhow!("{e}"))?;
+        let (rest, line) = parser::Line::parse(s).map_err(|e| anyhow!("{e}"))?;
+        if !rest.is_empty() {
+            anyhow::bail!("unexpected end of input: '{rest}'");
+        }
         log::debug!("Parsed line: {line:?}");
         match line {
-            parser::Line::Expr(expr) => Ok(Cmd::Eval(expr)),
-            parser::Line::Assignment(ident, value) => Ok(Cmd::Assign { ident, value }),
-            parser::Line::Builtin(name, args) => Ok(Cmd::BuiltIn { name, args }),
+            parser::Line::Expr(expr) => Ok(Some(Cmd::Eval(expr))),
+            parser::Line::Assignment(ident, value) => Ok(Some(Cmd::Assign { ident, value })),
+            parser::Line::Builtin(name, args) => Ok(Some(Cmd::BuiltIn { name, args })),
         }
     }
 
@@ -118,24 +125,29 @@ impl<'a> Cmd<'a> {
                 for (import_name, import) in querier.imports(include_wasi) {
                     let import_name = querier.world_item_name(import_name)?;
                     let typ = format_world_item(import, querier);
-                    println!("{import_name}: {typ}");
+                    println!("{}: {typ}", import_name.bold());
                 }
             }
             Cmd::BuiltIn {
                 name: "inspect",
                 args,
             } => {
-                let &[name] = args.as_slice() else {
-                    bail!(
+                match args.as_slice() {
+                    &[] => {
+                        print_help();
+                    }
+                    &[name] => {
+                        let export = querier
+                            .export(name)
+                            .with_context(|| format!("no export with name '{name}'"))?;
+                        let typ = format_world_item(export, querier);
+                        println!("{name}: {typ}");
+                    }
+                    _ => bail!(
                         "wrong number of arguments to inspect function. Expected 1 got {}",
                         args.len()
-                    )
+                    ),
                 };
-                let export = querier
-                    .export(name)
-                    .with_context(|| format!("no export with name '{name}'"))?;
-                let typ = format_world_item(export, querier);
-                println!("{name}: {typ}");
             }
             Cmd::BuiltIn {
                 name: "compose",
@@ -172,6 +184,23 @@ impl<'a> Cmd<'a> {
         }
         Ok(false)
     }
+}
+
+fn print_help() {
+    println!("Calling imports can be done like so:
+
+> my-func(my-arg)
+
+Variables can be saved as well:
+
+> my-var = my-func(my-arg)
+
+There are also builtin functions that can be called with a preceding '.'. Supported functions include:
+  .imports                  print a list of all the component's imports
+  .exports                  print a list of all the component's exports
+  .link $function $wasm     satisfy the imported function `$func` with an export from the wasm component `$wasm`
+  .compose $adapter         satisfy imports with the supplied adapter module (e.g., to compose with WASI-Virt adapter)
+  .inspect $item            inspect an item `$item` in scope (`?` is alias for this built-in)")
 }
 
 fn eval(
@@ -282,8 +311,8 @@ fn format_world_item(item: &wit_parser::WorldItem, querier: &Querier) -> String 
             for (_, fun) in &interface.functions {
                 writeln!(
                     &mut output,
-                    "  {}: {}",
-                    fun.name,
+                    "    {}: {}",
+                    fun.name.bold(),
                     format_function(fun, querier)
                 )
                 .unwrap();
@@ -299,13 +328,13 @@ fn format_function(f: &wit_parser::Function, querier: &Querier) -> String {
     let mut params = Vec::new();
     for (param_name, param_type) in &f.params {
         let ty = querier.display_wit_type(param_type);
-        params.push(format!("{param_name}: {ty}"));
+        params.push(format!("{param_name}: {}", ty.italic()));
     }
     let params = params.join(", ");
     let rets = match &f.results {
         wit_parser::Results::Anon(t) => {
             let t = querier.display_wit_type(t);
-            format!(" -> {t}")
+            format!(" -> {}", t.italic())
         }
         wit_parser::Results::Named(n) if n.is_empty() => String::new(),
         wit_parser::Results::Named(_) => todo!(),

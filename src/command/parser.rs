@@ -40,6 +40,9 @@ pub fn builtin_call(input: &str) -> nom::IResult<&str, (&str, Vec<&str>)> {
 pub fn special_char(input: &str) -> nom::IResult<&str, (&str, Vec<&str>)> {
     let (rest, _) = tag("?")(input)?;
     let (rest, args) = separated_list0(multispace1, builtin_argument)(rest)?;
+    if rest.is_empty() {
+        return Ok(("", ("inspect", Vec::new())));
+    }
     Ok((rest, ("inspect", args)))
 }
 

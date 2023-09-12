@@ -6,6 +6,7 @@ use std::collections::HashMap;
 
 use anyhow::Context as _;
 use clap::Parser;
+use colored::*;
 use rustyline::error::ReadlineError;
 
 fn main() {
@@ -37,14 +38,15 @@ fn _main() -> anyhow::Result<()> {
         let _ = rl.load_history(&home.join(".weplhistory"));
     }
     let mut scope = HashMap::default();
+    let prompt = "> ".blue().bold().to_string();
     loop {
-        let readline = rl.readline("> ");
+        let readline = rl.readline(&prompt);
         match readline {
             Ok(line) => {
                 let _ = rl.add_history_entry(&line);
                 let line = command::Cmd::parse(&line);
                 match line {
-                    Ok(cmd) => {
+                    Ok(Some(cmd)) => {
                         match cmd.run(&mut runtime, &mut querier, &mut scope) {
                             Err(e) => {
                                 print_error_prefix();
@@ -58,17 +60,23 @@ fn _main() -> anyhow::Result<()> {
                             _ => {}
                         }
                     }
-                    Err(e) => eprintln!("Error parsing input: {e}"),
+                    Ok(None) => continue,
+                    Err(e) => {
+                        print_error_prefix();
+                        eprintln!("{e}")
+                    }
                 }
             }
             Err(ReadlineError::Interrupted) | Err(ReadlineError::Eof) => break,
             Err(ReadlineError::WindowResized) => continue,
             Err(ReadlineError::Io(e)) => {
-                eprintln!("Error reading from stdin: {e}");
+                print_error_prefix();
+                eprintln!("reading from stdin failed: {e}");
                 break;
             }
             Err(e) => {
-                eprintln!("Error reading from stdin: {e}");
+                print_error_prefix();
+                eprintln!("reading from stdin failed: {e}");
                 break;
             }
         }
@@ -81,21 +89,14 @@ fn _main() -> anyhow::Result<()> {
 }
 
 fn print_error_prefix() {
-    print_prefix("Error: ", termcolor::Color::Red)
+    print_prefix("Error: ", colored::Color::Red)
 }
 
-fn print_prefix(prefix: &str, color: termcolor::Color) {
+fn print_prefix(prefix: &str, color: colored::Color) {
     use std::io::Write;
-    use termcolor::WriteColor;
-    let mut stderr = termcolor::StandardStream::stderr(termcolor::ColorChoice::Always);
-    let _ = stderr.set_color(
-        termcolor::ColorSpec::new()
-            .set_fg(Some(color))
-            .set_bold(true),
-    );
-    let _ = write!(&mut stderr, "{}", prefix);
+    let mut stderr = std::io::stderr();
+    let _ = write!(&mut stderr, "{}", prefix.color(color).bold());
     let _ = stderr.flush();
-    let _ = stderr.reset();
 }
 
 /// Simple program to greet a person
