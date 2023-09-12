@@ -102,13 +102,20 @@ impl<'a> Cmd<'a> {
                 name: "imports",
                 args,
             } => {
-                let &[] = args.as_slice() else {
-                    bail!(
-                        "wrong number of arguments to imports function. Expected 0 got {}",
-                        args.len()
-                    )
+                let include_wasi = match args.as_slice() {
+                    &[] => true,
+                    &["--no-wasi"] => false,
+                    &[flag] => {
+                        bail!("unrecorgnized flag for imports builtin '{}'", flag)
+                    }
+                    _ => {
+                        bail!(
+                            "wrong number of arguments to imports function. Expected 0 got {}",
+                            args.len()
+                        )
+                    }
                 };
-                for (import_name, import) in querier.world().imports.iter() {
+                for (import_name, import) in querier.imports(include_wasi) {
                     let import_name = querier.world_item_name(import_name)?;
                     let typ = format_world_item(import, querier);
                     println!("{import_name}: {typ}");
@@ -267,25 +274,43 @@ fn literal_to_val(l: parser::Literal<'_>, preferred_type: Option<&wit_parser::Ty
 
 fn format_world_item(item: &wit_parser::WorldItem, querier: &Querier) -> String {
     match item {
-        wit_parser::WorldItem::Function(f) => {
-            let mut params = Vec::new();
-            for (param_name, param_type) in &f.params {
-                let ty = querier.display_wit_type(param_type);
-                params.push(format!("{param_name}: {ty}"));
+        wit_parser::WorldItem::Function(f) => format_function(f, querier),
+        wit_parser::WorldItem::Interface(id) => {
+            use std::fmt::Write;
+            let interface = querier.interface(*id).unwrap();
+            let mut output = String::from("{\n");
+            for (_, fun) in &interface.functions {
+                writeln!(
+                    &mut output,
+                    "  {}: {}",
+                    fun.name,
+                    format_function(fun, querier)
+                )
+                .unwrap();
             }
-            let params = params.join(", ");
-            let rets = match &f.results {
-                wit_parser::Results::Anon(t) => {
-                    let t = querier.display_wit_type(t);
-                    format!(" -> {t}")
-                }
-                wit_parser::Results::Named(_) => todo!(),
-            };
-            format!("func({params}){rets}")
+            output.push_str("}");
+            output
         }
-        wit_parser::WorldItem::Interface(_) => "interface".into(),
         wit_parser::WorldItem::Type(_) => "type".into(),
     }
+}
+
+fn format_function(f: &wit_parser::Function, querier: &Querier) -> String {
+    let mut params = Vec::new();
+    for (param_name, param_type) in &f.params {
+        let ty = querier.display_wit_type(param_type);
+        params.push(format!("{param_name}: {ty}"));
+    }
+    let params = params.join(", ");
+    let rets = match &f.results {
+        wit_parser::Results::Anon(t) => {
+            let t = querier.display_wit_type(t);
+            format!(" -> {t}")
+        }
+        wit_parser::Results::Named(n) if n.is_empty() => String::new(),
+        wit_parser::Results::Named(_) => todo!(),
+    };
+    format!("func({params}){rets}")
 }
 
 fn format_val(val: &Val) -> String {

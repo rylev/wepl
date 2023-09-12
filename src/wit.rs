@@ -47,11 +47,11 @@ impl Querier {
     }
 
     pub fn export(&self, name: &str) -> Option<&WorldItem> {
-        get_world_item_by_name(self.world().exports.iter(), name)
+        self.get_world_item_by_name(self.world().exports.iter(), name)
     }
 
     pub fn import(&self, name: &str) -> Option<&WorldItem> {
-        get_world_item_by_name(self.world().imports.iter(), name)
+        self.get_world_item_by_name(self.world().imports.iter(), name)
     }
 
     pub fn interface(&self, id: InterfaceId) -> Option<&wit_parser::Interface> {
@@ -95,17 +95,28 @@ impl Querier {
                             }
                         }
                         wit_parser::TypeDefKind::Type(t) => return self.display_wit_type(t),
-                        wit_parser::TypeDefKind::Unknown => unreachable!(),
+                        wit_parser::TypeDefKind::List(t) => {
+                            format!("list<{}>", self.display_wit_type(t))
+                        }
+                        wit_parser::TypeDefKind::Tuple(t) => {
+                            format!(
+                                "tuple<{}>",
+                                t.types
+                                    .iter()
+                                    .map(|t| self.display_wit_type(t))
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            )
+                        }
                         wit_parser::TypeDefKind::Record(_) => todo!(),
                         wit_parser::TypeDefKind::Resource => todo!(),
                         wit_parser::TypeDefKind::Handle(_) => todo!(),
                         wit_parser::TypeDefKind::Flags(_) => todo!(),
-                        wit_parser::TypeDefKind::Tuple(_) => todo!(),
                         wit_parser::TypeDefKind::Variant(_) => todo!(),
                         wit_parser::TypeDefKind::Enum(_) => todo!(),
-                        wit_parser::TypeDefKind::List(_) => todo!(),
                         wit_parser::TypeDefKind::Future(_) => todo!(),
                         wit_parser::TypeDefKind::Stream(_) => todo!(),
+                        wit_parser::TypeDefKind::Unknown => unreachable!(),
                     },
                 };
                 return Cow::Owned(name);
@@ -195,16 +206,34 @@ impl Querier {
 
         Ok(())
     }
-}
+    fn get_world_item_by_name<'a>(
+        &self,
+        mut items: impl Iterator<Item = (&'a WorldKey, &'a WorldItem)>,
+        name: &str,
+    ) -> Option<&'a WorldItem> {
+        items.find_map(|(export_name, export)| {
+            let export_name = self.resolve.name_world_key(export_name);
+            (export_name == name).then_some(export)
+        })
+    }
 
-fn get_world_item_by_name<'a>(
-    mut items: impl Iterator<Item = (&'a WorldKey, &'a WorldItem)>,
-    name: &str,
-) -> Option<&'a WorldItem> {
-    items.find_map(|(export_name, export)| {
-        let WorldKey::Name(n) = export_name else {
-            return None;
-        };
-        (n == name).then_some(export)
-    })
+    pub(crate) fn imports(
+        &self,
+        include_wasi: bool,
+    ) -> impl Iterator<Item = (&WorldKey, &WorldItem)> {
+        self.world()
+            .imports
+            .iter()
+            .filter(move |(_, item)| match item {
+                WorldItem::Interface(id) if !include_wasi => {
+                    let interface = self.interface(*id).unwrap();
+                    let Some(package) = interface.package else {
+                        return true;
+                    };
+                    let package = self.resolve.packages.get(package).unwrap();
+                    package.name.namespace != "wasi"
+                }
+                _ => true,
+            })
+    }
 }

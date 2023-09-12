@@ -98,7 +98,7 @@ impl Runtime {
     /// Stub a function with an export from the component encoded in `component_bytes`
     ///
     /// This function does not check that the component in `components_bytes` has the
-    /// export needed and that it doesn't have any non-wasi imports.
+    /// export needed.
     pub fn stub_function(&mut self, name: String, component_bytes: &[u8]) -> anyhow::Result<()> {
         let component = load_component(&self.engine, component_bytes)?;
         let mut linker = Linker::<ImportImplsContext>::new(&self.engine);
