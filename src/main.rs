@@ -27,7 +27,7 @@ fn _main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let component_bytes = std::fs::read(cli.component)?;
     let querier = wit::Querier::from_bytes(&component_bytes)?;
-    let mut runtime = runtime::Runtime::init(&component_bytes, &querier, |import_name| {
+    let mut runtime = runtime::Runtime::init(component_bytes, &querier, |import_name| {
         print_error_prefix();
         eprintln!("unimplemented import: {import_name}");
     })?;

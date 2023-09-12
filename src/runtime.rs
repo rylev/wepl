@@ -15,13 +15,13 @@ pub struct Runtime {
     store: Store<Context>,
     instance: Instance,
     linker: Linker<Context>,
-    component: Component,
+    component: (Component, Vec<u8>),
     import_impls: ImportImpls,
 }
 
 impl Runtime {
     pub fn init(
-        component_bytes: &[u8],
+        component_bytes: Vec<u8>,
         querier: &Querier,
         stub_import: impl Fn(&str) + Sync + Send + Clone + 'static,
     ) -> anyhow::Result<Self> {
@@ -31,6 +31,7 @@ impl Runtime {
         linker.allow_shadowing(true);
 
         if querier.imports_wasi() {
+            log::debug!("Linking with wasi");
             wasmtime_wasi::preview2::command::sync::add_to_linker(&mut linker)?;
         }
         for (import_name, import) in querier.non_wasi_imports() {
@@ -58,7 +59,7 @@ impl Runtime {
             store,
             instance,
             linker,
-            component,
+            component: (component, component_bytes),
             import_impls,
         })
     }
@@ -97,7 +98,7 @@ impl Runtime {
 
         let store = self.import_impls.store.clone();
         self.linker.root().func_new(
-            &self.component,
+            &self.component.0,
             &name.clone(),
             move |_ctx, args, results| {
                 let mut store = store.lock().unwrap();
@@ -110,10 +111,35 @@ impl Runtime {
         Ok(())
     }
 
+    pub fn set_component(&mut self, component: Vec<u8>) -> anyhow::Result<()> {
+        self.component = (Component::from_binary(&self.engine, &component)?, component);
+        self.refresh()
+    }
+
+    pub fn compose(&mut self, adapter: &[u8]) -> Result<(), anyhow::Error> {
+        let temp = std::env::temp_dir();
+        let tmp_virt = temp.join("virt.wasm");
+        std::fs::write(&tmp_virt, adapter)?;
+        let tmp_component = temp.join("component.wasm");
+        std::fs::write(&tmp_component, &self.component.1)?;
+
+        let bytes = wasm_compose::composer::ComponentComposer::new(
+            &tmp_component,
+            &wasm_compose::config::Config {
+                definitions: vec![tmp_virt],
+                ..Default::default()
+            },
+        )
+        .compose()?;
+        self.set_component(bytes)
+    }
+
     /// Get a new instance
     pub fn refresh(&mut self) -> anyhow::Result<()> {
         self.store = build_store(&self.engine);
-        self.instance = self.linker.instantiate(&mut self.store, &self.component)?;
+        self.instance = self
+            .linker
+            .instantiate(&mut self.store, &self.component.0)?;
         Ok(())
     }
 }
@@ -127,6 +153,7 @@ impl ImportImpls {
     fn new(engine: &Engine) -> Self {
         let mut table = Table::new();
         let mut builder = WasiCtxBuilder::new();
+        builder.inherit_stdout();
         let wasi = builder.build(&mut table).unwrap();
         let context = ImportImplsContext::new(table, wasi);
         let store = Store::new(engine, context);
@@ -140,6 +167,7 @@ impl ImportImpls {
 fn build_store(engine: &Engine) -> Store<Context> {
     let mut table = Table::new();
     let mut builder = WasiCtxBuilder::new();
+    builder.inherit_stdout().inherit_stderr();
     let wasi = builder.build(&mut table).unwrap();
     let context = Context::new(table, wasi);
     Store::new(engine, context)

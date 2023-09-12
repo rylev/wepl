@@ -130,6 +130,20 @@ impl<'a> Cmd<'a> {
                 let typ = format_world_item(export, querier);
                 println!("{name}: {typ}");
             }
+            Cmd::BuiltIn {
+                name: "compose",
+                args,
+            } => {
+                let &[path] = args.as_slice() else {
+                    bail!(
+                        "wrong number of arguments to compose function. Expected 1 got {}",
+                        args.len()
+                    )
+                };
+                let adapter =
+                    std::fs::read(path).context("could not read path to adapter module")?;
+                runtime.compose(&adapter)?;
+            }
             Cmd::BuiltIn { name: "link", args } => {
                 let &[func_name, component] = args.as_slice() else {
                     bail!("wrong number of arguments. Expected 2 got {}", args.len())

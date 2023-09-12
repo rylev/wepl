@@ -25,6 +25,7 @@ Supported functions include:
 * `.imports`: print a list of all the component's imports
 * `.exports`: print a list of all the component's exports
 * `.link $function $wasm`: satisfy the imported function `$func` with an export from the wasm component `$wasm`
+* `.compose $adapter`: satisfy imports with the supplied adapter module (e.g., to compose with [`WASI-Virt`](https://github.com/bytecodealliance/WASI-Virt) adapter)
 
 ## Features
 
@@ -33,3 +34,4 @@ Supported functions include:
 * Variable assignment
 * Type checking
 * Satisfying imports with other WebAssembly Components
+* Basic component composition
