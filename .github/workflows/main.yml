@@ -18,6 +18,7 @@ jobs:
       - name: Installs nightly toolchain
         run: |
           rustup update nightly
+          rustup component add rustfmt --toolchain nightly
           rustup default nightly
 
       - name: Formatting check
