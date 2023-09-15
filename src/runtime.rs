@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::Context as _;
 use wasmtime::{
-    component::{Component, Instance, Linker, Val},
+    component::{Component, Func, Instance, Linker, Val},
     Config, Engine, Store,
 };
 use wasmtime_wasi::preview2::{Table, WasiCtx, WasiCtxBuilder, WasiView};
@@ -12,7 +12,7 @@ use super::wit::Querier;
 
 pub struct Runtime {
     engine: Engine,
-    store: Store<Context>,
+    pub store: Store<Context>,
     instance: Instance,
     linker: Linker<Context>,
     component: (Component, Vec<u8>),
@@ -58,7 +58,7 @@ impl Runtime {
                         })?;
                     }
                 }
-                i => todo!("Implement import: {i:?}"),
+                _ => {}
             }
         }
         let pre = linker
@@ -75,6 +75,14 @@ impl Runtime {
             component: (component, component_bytes),
             import_impls,
         })
+    }
+
+    pub fn get_func(&mut self, name: &str) -> anyhow::Result<Func> {
+        self.instance
+            .exports(&mut self.store)
+            .root()
+            .func(name)
+            .with_context(|| format!("could not find function {name}' in instance"))
     }
 
     pub fn call_func(
@@ -190,7 +198,7 @@ fn build_store(engine: &Engine) -> Store<Context> {
     Store::new(engine, context)
 }
 
-struct Context {
+pub struct Context {
     table: Table,
     wasi: WasiCtx,
 }
