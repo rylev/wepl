@@ -138,7 +138,7 @@ fn anything_but_space(input: &str) -> nom::IResult<&str, &str> {
 }
 
 pub fn ident(input: &str) -> nom::IResult<&str, &str> {
-    let ident_parser = recognize(pair(alpha1, many0_count(alt((alpha1, tag("-"), tag("/"))))));
+    let ident_parser = recognize(pair(alpha1, many0_count(alt((alpha1, tag("-"))))));
     delimited(multispace0, ident_parser, multispace0)(input)
 }
 

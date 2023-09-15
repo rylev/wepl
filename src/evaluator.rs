@@ -118,8 +118,14 @@ impl<'a> Evaluator<'a> {
             parser::Literal::Record(mut r) => {
                 let ty = match type_hint {
                     Some(component::Type::Record(r)) => r,
-                    Some(t) => bail!("expected record got {t:?}"),
-                    None => bail!("cannot determine type of record"),
+                    Some(t) => bail!(
+                        "type error - required = {} found = record",
+                        display_component_type(t)
+                    ),
+                    None => {
+                        // TODO: try to find a record type that fits the shape of the literal
+                        bail!("cannot determine type of record")
+                    }
                 };
                 let mut values = Vec::new();
                 let types = ty
@@ -199,5 +205,33 @@ impl<'a> Evaluator<'a> {
             .get(ident)
             .with_context(|| format!("no identifier '{ident}' in scope"))
             .cloned()
+    }
+}
+
+fn display_component_type(ty: &component::Type) -> &'static str {
+    match ty {
+        component::Type::Bool => "bool",
+        component::Type::S8 => "s8",
+        component::Type::U8 => "u8",
+        component::Type::S16 => "s16",
+        component::Type::U16 => "u16",
+        component::Type::S32 => "s32",
+        component::Type::U32 => "u32",
+        component::Type::S64 => "s64",
+        component::Type::U64 => "u64",
+        component::Type::Float32 => "float32",
+        component::Type::Float64 => "float64",
+        component::Type::Char => "char",
+        component::Type::String => "string",
+        component::Type::List(_) => "list",
+        component::Type::Record(_) => "record",
+        component::Type::Tuple(_) => "tuple",
+        component::Type::Variant(_) => "variant",
+        component::Type::Enum(_) => "enum",
+        component::Type::Option(_) => "option",
+        component::Type::Result(_) => "result",
+        component::Type::Flags(_) => "flags",
+        component::Type::Own(_) => "own",
+        component::Type::Borrow(_) => "borrow",
     }
 }
