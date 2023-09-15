@@ -1,4 +1,5 @@
 mod command;
+mod evaluator;
 mod runtime;
 mod wit;
 
