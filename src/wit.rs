@@ -119,7 +119,8 @@ impl Querier {
                     .map(|o| self.display_wit_type(o, Expansion::Collapsed));
                 match (ok, err) {
                     (Some(ok), Some(err)) => format!("result<{ok}, {err}>"),
-                    (Some(t), _) | (_, Some(t)) => format!("result<{t}>"),
+                    (Some(t), _) => format!("result<{t}>"),
+                    (_, Some(t)) => format!("result<_, {t}>"),
                     _ => "result".into(),
                 }
             }
@@ -174,10 +175,34 @@ impl Querier {
                 }
                 Expansion::Collapsed => typ.name.clone().unwrap(),
             },
+            wit_parser::TypeDefKind::Variant(v) => match expansion {
+                Expansion::Expanded(col) => {
+                    let cases = v
+                        .cases
+                        .iter()
+                        .map(|c| {
+                            let data = match c.ty {
+                                Some(ty) => {
+                                    let ty = self.display_wit_type(&ty, Expansion::Collapsed);
+                                    format!("({ty})")
+                                }
+                                None => String::new(),
+                            };
+                            format!("{}{}", c.name, data)
+                        })
+                        .map(|f| format!("{}{}", " ".repeat(col as usize * 4), f))
+                        .collect::<Vec<_>>()
+                        .join(",\n");
+                    format!(
+                        "variant {{\n{cases}\n{}}}",
+                        " ".repeat((col - 1) as usize * 4)
+                    )
+                }
+                Expansion::Collapsed => typ.name.clone().unwrap(),
+            },
             wit_parser::TypeDefKind::Resource => todo!(),
             wit_parser::TypeDefKind::Handle(_) => todo!(),
             wit_parser::TypeDefKind::Flags(_) => todo!(),
-            wit_parser::TypeDefKind::Variant(_) => todo!(),
             wit_parser::TypeDefKind::Future(_) => todo!(),
             wit_parser::TypeDefKind::Stream(_) => todo!(),
             wit_parser::TypeDefKind::Unknown => unreachable!(),

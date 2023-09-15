@@ -3,6 +3,7 @@ use std::collections::HashMap;
 
 use anyhow::{anyhow, bail, Context as _};
 use colored::Colorize;
+use log::debug;
 use wasmtime::component::{self, Record, Val};
 
 use crate::wit::Expansion;
@@ -140,9 +141,10 @@ impl<'a> Cmd<'a> {
                             let interface = interface.and_then(|i| querier.interface_name(i));
                             let ident = match (interface, name) {
                                 (Some(i), Some(n)) => format!("{i}#{n}: "),
+                                (None, Some(n)) => format!("{n}: "),
                                 _ => todo!(),
                             };
-                            println!("{ident}{typ}\n");
+                            println!("{ident}{typ}");
                         }
                     }
                     _ => bail!(
@@ -218,8 +220,35 @@ fn eval(
 ) -> anyhow::Result<Val> {
     match expr {
         parser::Expr::Literal(l) => literal_to_val(runtime, querier, scope, l, preferred_type),
-        parser::Expr::Ident(n) => lookup_in_scope(scope, n),
-        parser::Expr::FunctionCall(name, args) => {
+        parser::Expr::Ident(ident) => resolve_ident(ident, preferred_type, scope),
+        parser::Expr::FunctionCall(name, mut args) => {
+            debug!(
+                "Checking for type constructor for {name} #args={} preferred_type={preferred_type:?}",
+                args.len()
+            );
+            // If the preferred type has some sort of type constructor, try that first
+            match preferred_type {
+                Some(component::Type::Option(o)) if name == "some" && args.len() == 1 => {
+                    let val = eval(runtime, querier, scope, args.remove(0), Some(&o.ty()))?;
+                    return o.new_val(Some(val));
+                }
+                Some(component::Type::Result(r)) if args.len() == 1 => {
+                    if let Some(ok) = r.ok() {
+                        if name == "ok" {
+                            let val = eval(runtime, querier, scope, args.remove(0), Some(&ok))?;
+                            return r.new_val(Ok(Some(val)));
+                        }
+                    }
+                    if let Some(err) = r.err() {
+                        if name == "err" {
+                            let val = eval(runtime, querier, scope, args.remove(0), Some(&err))?;
+                            return r.new_val(Err(Some(val)));
+                        }
+                    }
+                }
+                _ => {}
+            }
+
             let mut results = call_func(runtime, querier, scope, name, args)?;
             if results.len() != 1 {
                 bail!(
@@ -278,13 +307,22 @@ fn literal_to_val(
     preferred_type: Option<&component::Type>,
 ) -> anyhow::Result<Val> {
     match literal {
-        parser::Literal::Record(r) => {
+        parser::Literal::Record(mut r) => {
             let ty = match preferred_type {
                 Some(component::Type::Record(r)) => r,
                 Some(t) => bail!("expected record got {t:?}"),
                 None => bail!("cannot determine type of record"),
             };
             let mut values = Vec::new();
+            let types = ty
+                .fields()
+                .enumerate()
+                .map(|(index, field)| (field.name, index))
+                .collect::<HashMap<_, _>>();
+            // Sort the fields since wasmtime expects the fields to be in the defined order
+            r.fields
+                .sort_by(|(f1, _), (f2, _)| types.get(f1).unwrap().cmp(&types.get(f2).unwrap()));
+
             for ((name, field_expr), field_type) in r.fields.into_iter().zip(ty.fields()) {
                 values.push((
                     name,
@@ -293,22 +331,61 @@ fn literal_to_val(
             }
             Ok(Val::Record(Record::new(ty, values)?))
         }
-        parser::Literal::String(s) => Ok(Val::String(s.to_owned().into())),
+        parser::Literal::String(s) => {
+            let val = Val::String(s.to_owned().into());
+            match preferred_type {
+                Some(component::Type::Result(r)) => r.new_val(match (r.ok(), r.err()) {
+                    (Some(_), _) => Ok(Some(val)),
+                    (_, Some(_)) => Err(Some(val)),
+                    (None, None) => return Ok(val),
+                }),
+                _ => Ok(val),
+            }
+        }
         parser::Literal::Num(n) => match preferred_type {
             Some(component::Type::U8) => Ok(Val::U8(n.try_into()?)),
             _ => Ok(Val::S32(n.try_into()?)),
         },
-        parser::Literal::Ident(i) => match preferred_type {
-            Some(t) => match t {
-                component::Type::Enum(e) => e.new_val(i),
-                component::Type::U8 => scope
-                    .get(i)
-                    .cloned()
-                    .with_context(|| format!("ident {i} is not in scope")),
-                t => todo!("handle ident with type {t:?}"),
+    }
+}
+
+fn resolve_ident(
+    ident: &str,
+    preferred_type: Option<&component::Type>,
+    scope: &HashMap<String, Val>,
+) -> Result<Val, anyhow::Error> {
+    debug!("Resolving ident {ident} with preferred type {preferred_type:?}");
+    match preferred_type {
+        Some(t) => match t {
+            component::Type::Bool if ident == "true" => Ok(Val::Bool(true)),
+            component::Type::Bool if ident == "false" => Ok(Val::Bool(false)),
+            component::Type::Enum(e) => e.new_val(ident),
+            component::Type::Variant(v) => match lookup_in_scope(scope, ident) {
+                Ok(v) => Ok(v),
+                Err(_) => v.new_val(ident, None),
             },
-            None => bail!("could not determine type of '{i}'"),
+            component::Type::Option(o) if ident == "none" => o.new_val(None),
+            component::Type::Option(o) => {
+                o.new_val(Some(resolve_ident(ident, Some(&o.ty()), scope)?))
+            }
+            component::Type::Result(r) => r.new_val(match (r.ok(), r.err()) {
+                (Some(o), _) => Ok(Some(resolve_ident(ident, Some(&o), scope)?)),
+                (None, None) if ident == "ok" => Ok(None),
+                (None, None) if ident == "err" => Err(None),
+                _ => return lookup_in_scope(scope, ident),
+            }),
+            component::Type::Bool
+            | component::Type::U8
+            | component::Type::U16
+            | component::Type::U32
+            | component::Type::U64
+            | component::Type::S8
+            | component::Type::S16
+            | component::Type::S32
+            | component::Type::S64 => lookup_in_scope(scope, ident),
+            t => todo!("handle ident '{ident}' with type {t:?}"),
         },
+        None => lookup_in_scope(scope, ident),
     }
 }
 

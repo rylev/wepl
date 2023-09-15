@@ -57,8 +57,8 @@ impl<'a> Expr<'a> {
     pub fn parse(input: &str) -> nom::IResult<&str, Expr> {
         alt((
             map(function_call, |(name, args)| Expr::FunctionCall(name, args)),
-            map(Literal::parse, Expr::Literal),
             map(ident, Expr::Ident),
+            map(Literal::parse, Expr::Literal),
         ))(input)
     }
 }
@@ -68,7 +68,6 @@ pub enum Literal<'a> {
     Record(Record<'a>),
     String(&'a str),
     Num(usize),
-    Ident(&'a str),
 }
 
 impl<'a> Literal<'a> {
@@ -78,7 +77,6 @@ impl<'a> Literal<'a> {
             map(map_res(digit1, str::parse), Literal::Num),
             map(Record::parse, Literal::Record),
             map(string_literal, Literal::String),
-            map(ident, Literal::Ident),
         ))(input)
     }
 }
@@ -176,7 +174,7 @@ mod tests {
 
     #[test]
     fn function_call_with_record() {
-        let input = r#"my-func({n: 1})"#;
+        let input = r#"my-func({n: 1, name: err("string")})"#;
         let result = Line::parse(input);
         assert_eq!(
             result,
@@ -185,7 +183,16 @@ mod tests {
                 Line::Expr(Expr::FunctionCall(
                     "my-func",
                     vec![Expr::Literal(Literal::Record(Record {
-                        fields: vec![("n", Expr::Literal(Literal::Num(1)))]
+                        fields: vec![
+                            ("n", Expr::Literal(Literal::Num(1))),
+                            (
+                                "name",
+                                Expr::FunctionCall(
+                                    "err",
+                                    vec![Expr::Literal(Literal::String("string"))]
+                                )
+                            )
+                        ]
                     }))]
                 ))
             ))
@@ -217,6 +224,13 @@ mod tests {
                 Line::Assignment("x", Expr::Literal(Literal::String("wow")))
             ))
         );
+    }
+
+    #[test]
+    fn ident_line() {
+        let input = r#"hello-world"#;
+        let result = Line::parse(input);
+        assert_eq!(result, Ok(("", Line::Expr(Expr::Ident("hello-world")))));
     }
 
     #[test]
