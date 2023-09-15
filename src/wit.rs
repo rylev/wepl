@@ -2,7 +2,7 @@ use std::borrow::Cow;
 
 use anyhow::Context;
 use wit_component::DecodedWasm;
-use wit_parser::{Function, InterfaceId, Resolve, World, WorldId, WorldItem, WorldKey};
+use wit_parser::{Function, InterfaceId, Resolve, TypeDef, World, WorldId, WorldItem, WorldKey};
 
 pub struct Querier {
     resolve: Resolve,
@@ -58,7 +58,26 @@ impl Querier {
         self.resolve.interfaces.get(id)
     }
 
-    pub fn display_wit_type<'a>(&self, param_type: &wit_parser::Type) -> Cow<'a, str> {
+    pub(crate) fn types_by_name(&self, name: &str) -> Vec<(Option<&InterfaceId>, &TypeDef)> {
+        let mut types = Vec::new();
+        for (_, t) in &self.resolve.types {
+            if t.name.as_deref().map(|n| n == name).unwrap_or_default() {
+                let interface = if let wit_parser::TypeOwner::Interface(i) = &t.owner {
+                    Some(i)
+                } else {
+                    None
+                };
+                types.push((interface, t));
+            }
+        }
+        types
+    }
+
+    pub fn display_wit_type<'a>(
+        &'a self,
+        param_type: &wit_parser::Type,
+        expansion: Expansion,
+    ) -> Cow<'a, str> {
         let str = match param_type {
             wit_parser::Type::Bool => "bool",
             wit_parser::Type::U8 => "u8",
@@ -79,50 +98,91 @@ impl Querier {
                     .types
                     .get(*id)
                     .expect("found type id for type not present in resolver");
-                let name = match typ.name.clone() {
-                    Some(n) => n,
-                    None => match &typ.kind {
-                        wit_parser::TypeDefKind::Option(o) => {
-                            format!("option<{}>", self.display_wit_type(o))
-                        }
-                        wit_parser::TypeDefKind::Result(r) => {
-                            let ok = r.ok.as_ref().map(|o| self.display_wit_type(o));
-                            let err = r.err.as_ref().map(|o| self.display_wit_type(o));
-                            match (ok, err) {
-                                (Some(ok), Some(err)) => format!("result<{ok}, {err}>"),
-                                (Some(t), _) | (_, Some(t)) => format!("result<{t}>"),
-                                _ => "result".into(),
-                            }
-                        }
-                        wit_parser::TypeDefKind::Type(t) => return self.display_wit_type(t),
-                        wit_parser::TypeDefKind::List(t) => {
-                            format!("list<{}>", self.display_wit_type(t))
-                        }
-                        wit_parser::TypeDefKind::Tuple(t) => {
-                            format!(
-                                "tuple<{}>",
-                                t.types
-                                    .iter()
-                                    .map(|t| self.display_wit_type(t))
-                                    .collect::<Vec<_>>()
-                                    .join(", ")
-                            )
-                        }
-                        wit_parser::TypeDefKind::Record(_) => todo!(),
-                        wit_parser::TypeDefKind::Resource => todo!(),
-                        wit_parser::TypeDefKind::Handle(_) => todo!(),
-                        wit_parser::TypeDefKind::Flags(_) => todo!(),
-                        wit_parser::TypeDefKind::Variant(_) => todo!(),
-                        wit_parser::TypeDefKind::Enum(_) => todo!(),
-                        wit_parser::TypeDefKind::Future(_) => todo!(),
-                        wit_parser::TypeDefKind::Stream(_) => todo!(),
-                        wit_parser::TypeDefKind::Unknown => unreachable!(),
-                    },
-                };
-                return Cow::Owned(name);
+                return self.display_wit_type_def(typ, expansion);
             }
         };
         Cow::Borrowed(str)
+    }
+
+    pub fn display_wit_type_def(&self, typ: &TypeDef, expansion: Expansion) -> Cow<'_, str> {
+        let display = match &typ.kind {
+            wit_parser::TypeDefKind::Option(o) => {
+                format!("option<{}>", self.display_wit_type(o, Expansion::Collapsed))
+            }
+            wit_parser::TypeDefKind::Result(r) => {
+                let ok =
+                    r.ok.as_ref()
+                        .map(|o| self.display_wit_type(o, Expansion::Collapsed));
+                let err = r
+                    .err
+                    .as_ref()
+                    .map(|o| self.display_wit_type(o, Expansion::Collapsed));
+                match (ok, err) {
+                    (Some(ok), Some(err)) => format!("result<{ok}, {err}>"),
+                    (Some(t), _) | (_, Some(t)) => format!("result<{t}>"),
+                    _ => "result".into(),
+                }
+            }
+            wit_parser::TypeDefKind::Type(t) => return self.display_wit_type(t, expansion),
+            wit_parser::TypeDefKind::List(t) => {
+                format!("list<{}>", self.display_wit_type(t, Expansion::Collapsed))
+            }
+            wit_parser::TypeDefKind::Tuple(t) => {
+                format!(
+                    "tuple<{}>",
+                    t.types
+                        .iter()
+                        .map(|t| self.display_wit_type(t, Expansion::Collapsed))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            }
+            wit_parser::TypeDefKind::Enum(e) => match expansion {
+                Expansion::Expanded(col) => {
+                    let fields = e
+                        .cases
+                        .iter()
+                        .map(|c| format!("{}{}", " ".repeat(col as usize * 4), c.name))
+                        .collect::<Vec<_>>()
+                        .join(",\n");
+                    format!(
+                        "enum {{\n{fields}\n{}}}",
+                        " ".repeat((col - 1) as usize * 4)
+                    )
+                }
+                Expansion::Collapsed => typ.name.clone().unwrap(),
+            },
+            wit_parser::TypeDefKind::Record(r) => match expansion {
+                Expansion::Expanded(col) => {
+                    let fields = r
+                        .fields
+                        .iter()
+                        .map(|f| {
+                            format!(
+                                "{}: {}",
+                                f.name,
+                                self.display_wit_type(&f.ty, Expansion::Collapsed)
+                            )
+                        })
+                        .map(|f| format!("{}{}", " ".repeat(col as usize * 4), f))
+                        .collect::<Vec<_>>()
+                        .join(",\n");
+                    format!(
+                        "record {{\n{fields}\n{}}}",
+                        " ".repeat((col - 1) as usize * 4)
+                    )
+                }
+                Expansion::Collapsed => typ.name.clone().unwrap(),
+            },
+            wit_parser::TypeDefKind::Resource => todo!(),
+            wit_parser::TypeDefKind::Handle(_) => todo!(),
+            wit_parser::TypeDefKind::Flags(_) => todo!(),
+            wit_parser::TypeDefKind::Variant(_) => todo!(),
+            wit_parser::TypeDefKind::Future(_) => todo!(),
+            wit_parser::TypeDefKind::Stream(_) => todo!(),
+            wit_parser::TypeDefKind::Unknown => unreachable!(),
+        };
+        Cow::Owned(display)
     }
 
     pub fn imports_wasi(&self) -> bool {
@@ -161,21 +221,12 @@ impl Querier {
             })
     }
 
-    pub fn world_item_name(&self, name: &WorldKey) -> anyhow::Result<String> {
-        let import_name = match name {
-            WorldKey::Name(n) => n.clone(),
-            WorldKey::Interface(i) => {
-                let interface = self.resolve.interfaces.get(*i).unwrap();
-                match &interface.package {
-                    Some(package_id) => {
-                        let package = self.resolve.packages.get(*package_id).unwrap();
-                        format!("{}/{}", package.name, interface.name.as_ref().unwrap())
-                    }
-                    None => todo!(),
-                }
-            }
-        };
-        Ok(import_name)
+    pub fn world_item_name(&self, name: &WorldKey) -> String {
+        self.resolve.name_world_key(name)
+    }
+
+    pub fn interface_name(&self, interface: &InterfaceId) -> Option<String> {
+        self.resolve.id_of(*interface)
     }
 
     pub fn world(&self) -> &World {
@@ -236,4 +287,9 @@ impl Querier {
                 _ => true,
             })
     }
+}
+
+pub enum Expansion {
+    Expanded(u8),
+    Collapsed,
 }

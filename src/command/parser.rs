@@ -41,9 +41,9 @@ pub fn special_char(input: &str) -> nom::IResult<&str, (&str, Vec<&str>)> {
     let (rest, _) = tag("?")(input)?;
     let (rest, args) = separated_list0(multispace1, builtin_argument)(rest)?;
     if rest.is_empty() {
-        return Ok(("", ("inspect", Vec::new())));
+        return Ok(("", ("help", Vec::new())));
     }
-    Ok((rest, ("inspect", args)))
+    Ok((rest, ("help", args)))
 }
 
 #[derive(Debug, PartialEq)]

@@ -5,6 +5,8 @@ use anyhow::{anyhow, bail, ensure, Context as _};
 use colored::Colorize;
 use wasmtime::component::Val;
 
+use crate::wit::Expansion;
+
 use super::runtime::Runtime;
 use super::wit::Querier;
 
@@ -100,7 +102,7 @@ impl<'a> Cmd<'a> {
                     )
                 };
                 for (export_name, export) in querier.world().exports.iter() {
-                    let export_name = querier.world_item_name(export_name)?;
+                    let export_name = querier.world_item_name(export_name);
                     let typ = format_world_item(export, querier);
                     println!("{export_name}: {typ}");
                 }
@@ -123,25 +125,25 @@ impl<'a> Cmd<'a> {
                     }
                 };
                 for (import_name, import) in querier.imports(include_wasi) {
-                    let import_name = querier.world_item_name(import_name)?;
+                    let import_name = querier.world_item_name(import_name);
                     let typ = format_world_item(import, querier);
                     println!("{}: {typ}", import_name.bold());
                 }
             }
-            Cmd::BuiltIn {
-                name: "inspect",
-                args,
-            } => {
+            Cmd::BuiltIn { name: "type", args } => {
                 match args.as_slice() {
-                    &[] => {
-                        print_help();
-                    }
                     &[name] => {
-                        let export = querier
-                            .export(name)
-                            .with_context(|| format!("no export with name '{name}'"))?;
-                        let typ = format_world_item(export, querier);
-                        println!("{name}: {typ}");
+                        let types = querier.types_by_name(name);
+                        for (interface, ty) in &types {
+                            let typ = querier.display_wit_type_def(ty, Expansion::Expanded(1));
+                            let name = &ty.name;
+                            let interface = interface.and_then(|i| querier.interface_name(i));
+                            let ident = match (interface, name) {
+                                (Some(i), Some(n)) => format!("{i}#{n}: "),
+                                _ => todo!(),
+                            };
+                            println!("{ident}{typ}\n");
+                        }
                     }
                     _ => bail!(
                         "wrong number of arguments to inspect function. Expected 1 got {}",
@@ -174,6 +176,10 @@ impl<'a> Cmd<'a> {
                 querier.check_dynamic_import(func_name, &component_bytes)?;
                 runtime.stub_function(func_name.into(), &component_bytes)?;
             }
+            Cmd::BuiltIn {
+                name: "help",
+                args: _,
+            } => print_help(),
             Cmd::BuiltIn {
                 name: "clear",
                 args: _,
@@ -261,7 +267,7 @@ fn call_func(
                     matches!(evaled_arg, Val::U8(_)),
                     "arg '{}' type mismatch: expected value of type u8 got {}",
                     param_name,
-                    querier.display_wit_type(param_type)
+                    querier.display_wit_type(param_type, Expansion::Collapsed)
                 );
             }
             wit_parser::Type::U16 => todo!(),
@@ -279,7 +285,7 @@ fn call_func(
                     matches!(evaled_arg, Val::String(_)),
                     "arg '{}' type mismatch: expected value of type {} got {}",
                     param_name,
-                    querier.display_wit_type(param_type),
+                    querier.display_wit_type(param_type, Expansion::Collapsed),
                     val_as_type(&evaled_arg)
                 );
             }
@@ -327,13 +333,13 @@ fn format_world_item(item: &wit_parser::WorldItem, querier: &Querier) -> String 
 fn format_function(f: &wit_parser::Function, querier: &Querier) -> String {
     let mut params = Vec::new();
     for (param_name, param_type) in &f.params {
-        let ty = querier.display_wit_type(param_type);
+        let ty = querier.display_wit_type(param_type, Expansion::Collapsed);
         params.push(format!("{param_name}: {}", ty.italic()));
     }
     let params = params.join(", ");
     let rets = match &f.results {
         wit_parser::Results::Anon(t) => {
-            let t = querier.display_wit_type(t);
+            let t = querier.display_wit_type(t, Expansion::Collapsed);
             format!(" -> {}", t.italic())
         }
         wit_parser::Results::Named(n) if n.is_empty() => String::new(),

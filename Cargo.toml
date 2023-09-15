@@ -14,11 +14,10 @@ rustyline = "12.0.0"
 colored = "2"
 tokio = { version = "1.0", features = ["macros"] }
 
-# component model deps as of 2023-09-08
-wasmtime = { git = "https://github.com/bytecodealliance/wasmtime", rev = "134dddc8de5f9011aa7e4cf30cb8e9f9fa484e87", features = [
+wasmtime = { git = "https://github.com/bytecodealliance/wasmtime", rev = "409bdd0330d9525846cc199f5bfe95b6a695f735", features = [
     "component-model",
 ] }
-wasmtime-wasi = { git = "https://github.com/bytecodealliance/wasmtime", rev = "134dddc8de5f9011aa7e4cf30cb8e9f9fa484e87", features = [
+wasmtime-wasi = { git = "https://github.com/bytecodealliance/wasmtime", rev = "409bdd0330d9525846cc199f5bfe95b6a695f735", features = [
     "tokio",
 ] }
 wasi-virt = { git = "https://github.com/bytecodealliance/WASI-Virt", rev = "c485962a7cb44637005fb6cfc3cf1515d81fe418" }
