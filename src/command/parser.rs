@@ -56,8 +56,8 @@ pub enum Expr<'a> {
 impl<'a> Expr<'a> {
     pub fn parse(input: &str) -> nom::IResult<&str, Expr> {
         alt((
-            map(Literal::parse, Expr::Literal),
             map(function_call, |(name, args)| Expr::FunctionCall(name, args)),
+            map(Literal::parse, Expr::Literal),
             map(ident, Expr::Ident),
         ))(input)
     }
@@ -65,16 +65,41 @@ impl<'a> Expr<'a> {
 
 #[derive(Debug, PartialEq)]
 pub enum Literal<'a> {
+    Record(Record<'a>),
     String(&'a str),
     Num(usize),
+    Ident(&'a str),
 }
 
 impl<'a> Literal<'a> {
     pub fn parse(input: &str) -> nom::IResult<&str, Literal> {
+        let input = input.trim();
         alt((
-            map(string_literal, Literal::String),
             map(map_res(digit1, str::parse), Literal::Num),
+            map(Record::parse, Literal::Record),
+            map(string_literal, Literal::String),
+            map(ident, Literal::Ident),
         ))(input)
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub struct Record<'a> {
+    pub fields: Vec<(&'a str, Expr<'a>)>,
+}
+
+impl<'a> Record<'a> {
+    fn parse(input: &'a str) -> nom::IResult<&str, Self> {
+        fn field(input: &str) -> nom::IResult<&str, (&str, Expr<'_>)> {
+            let (rest, name) = ident(input)?;
+            let (rest, _) = tag(":")(rest)?;
+            let (rest, expr) = Expr::parse(rest)?;
+            Ok((rest, (name, expr)))
+        }
+        let (rest, _) = tag("{")(input)?;
+        let (rest, fields) = cut(separated_list0(tag(","), field))(rest)?;
+        let (rest, _) = cut(tag("}"))(rest)?;
+        Ok((rest, Self { fields }))
     }
 }
 
@@ -87,8 +112,9 @@ fn assignment(input: &str) -> nom::IResult<&str, (&str, Expr<'_>)> {
 
 pub fn function_call(input: &str) -> nom::IResult<&str, (&str, Vec<Expr<'_>>)> {
     let (rest, ident) = ident(input)?;
-    let args = separated_list0(tag(","), Expr::parse);
-    let (rest, args) = delimited(tag("("), args, tag(")"))(rest)?;
+    let (rest, _) = tag("(")(rest)?;
+    let (rest, args) = cut(separated_list0(tag(","), Expr::parse))(rest)?;
+    let (rest, _) = cut(tag(")"))(rest)?;
 
     Ok((rest, (ident, args)))
 }
@@ -114,10 +140,7 @@ fn anything_but_space(input: &str) -> nom::IResult<&str, &str> {
 }
 
 pub fn ident(input: &str) -> nom::IResult<&str, &str> {
-    let ident_parser = recognize(pair(
-        alpha1,
-        many0_count(alt((alpha1, tag("-"), tag("/"), tag(":")))),
-    ));
+    let ident_parser = recognize(pair(alpha1, many0_count(alt((alpha1, tag("-"), tag("/"))))));
     delimited(multispace0, ident_parser, multispace0)(input)
 }
 
@@ -139,6 +162,31 @@ mod tests {
                         "my-other-func",
                         vec![Expr::Literal(Literal::String("arg"))]
                     )]
+                ))
+            ))
+        );
+    }
+
+    #[test]
+    fn function_call_bad_args() {
+        let input = r#"my-func(%^&)"#;
+        let result = Line::parse(input);
+        assert!(matches!(result, Err(nom::Err::Failure(_))));
+    }
+
+    #[test]
+    fn function_call_with_record() {
+        let input = r#"my-func({n: 1})"#;
+        let result = Line::parse(input);
+        assert_eq!(
+            result,
+            Ok((
+                "",
+                Line::Expr(Expr::FunctionCall(
+                    "my-func",
+                    vec![Expr::Literal(Literal::Record(Record {
+                        fields: vec![("n", Expr::Literal(Literal::Num(1)))]
+                    }))]
                 ))
             ))
         );

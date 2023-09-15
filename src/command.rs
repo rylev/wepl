@@ -1,9 +1,9 @@
 mod parser;
 use std::collections::HashMap;
 
-use anyhow::{anyhow, bail, ensure, Context as _};
+use anyhow::{anyhow, bail, Context as _};
 use colored::Colorize;
-use wasmtime::component::Val;
+use wasmtime::component::{self, Record, Val};
 
 use crate::wit::Expansion;
 
@@ -54,7 +54,7 @@ impl<'a> Cmd<'a> {
         match self {
             Cmd::Eval(expr) => match expr {
                 parser::Expr::Literal(l) => {
-                    let val = literal_to_val(l, None);
+                    let val = literal_to_val(runtime, querier, scope, l, None)?;
                     println!("{}: {}", format_val(&val), val_as_type(&val));
                 }
                 parser::Expr::Ident(ident) => match scope.get(ident) {
@@ -112,9 +112,9 @@ impl<'a> Cmd<'a> {
                 args,
             } => {
                 let include_wasi = match args.as_slice() {
-                    &[] => true,
-                    &["--no-wasi"] => false,
-                    &[flag] => {
+                    [] => true,
+                    ["--no-wasi"] => false,
+                    [flag] => {
                         bail!("unrecorgnized flag for imports builtin '{}'", flag)
                     }
                     _ => {
@@ -214,10 +214,10 @@ fn eval(
     querier: &Querier,
     scope: &HashMap<String, Val>,
     expr: parser::Expr<'_>,
-    preferred_type: Option<&wit_parser::Type>,
+    preferred_type: Option<&component::Type>,
 ) -> anyhow::Result<Val> {
     match expr {
-        parser::Expr::Literal(l) => Ok(literal_to_val(l, preferred_type)),
+        parser::Expr::Literal(l) => literal_to_val(runtime, querier, scope, l, preferred_type),
         parser::Expr::Ident(n) => lookup_in_scope(scope, n),
         parser::Expr::FunctionCall(name, args) => {
             let mut results = call_func(runtime, querier, scope, name, args)?;
@@ -258,51 +258,56 @@ fn call_func(
             args.len()
         )
     }
-    for ((param_name, param_type), arg) in func_def.params.iter().zip(args) {
-        let evaled_arg = eval(runtime, querier, scope, arg, Some(param_type))?;
-        match param_type {
-            wit_parser::Type::Bool => todo!(),
-            wit_parser::Type::U8 => {
-                ensure!(
-                    matches!(evaled_arg, Val::U8(_)),
-                    "arg '{}' type mismatch: expected value of type u8 got {}",
-                    param_name,
-                    querier.display_wit_type(param_type, Expansion::Collapsed)
-                );
-            }
-            wit_parser::Type::U16 => todo!(),
-            wit_parser::Type::U32 => todo!(),
-            wit_parser::Type::U64 => todo!(),
-            wit_parser::Type::S8 => todo!(),
-            wit_parser::Type::S16 => todo!(),
-            wit_parser::Type::S32 => todo!(),
-            wit_parser::Type::S64 => todo!(),
-            wit_parser::Type::Float32 => todo!(),
-            wit_parser::Type::Float64 => todo!(),
-            wit_parser::Type::Char => todo!(),
-            wit_parser::Type::String => {
-                ensure!(
-                    matches!(evaled_arg, Val::String(_)),
-                    "arg '{}' type mismatch: expected value of type {} got {}",
-                    param_name,
-                    querier.display_wit_type(param_type, Expansion::Collapsed),
-                    val_as_type(&evaled_arg)
-                );
-            }
-            wit_parser::Type::Id(_) => todo!(),
-        }
+    let func = runtime.get_func(name)?;
+    let names = func_def.params.iter().map(|(n, _)| n);
+    let types = func.params(&mut runtime.store);
+    for (param_name, (param_type, arg)) in names.zip(types.iter().zip(args)) {
+        let evaled_arg = eval(runtime, querier, scope, arg, Some(param_type))
+            .map_err(|e| anyhow!("argument '{param_name}': {e}"))?;
         evaled_args.push(evaled_arg);
     }
     let results = runtime.call_func(&func_def.name, &evaled_args, func_def.results.len())?;
     Ok(results)
 }
 
-fn literal_to_val(l: parser::Literal<'_>, preferred_type: Option<&wit_parser::Type>) -> Val {
-    match l {
-        parser::Literal::String(s) => Val::String(s.to_owned().into()),
+fn literal_to_val(
+    runtime: &mut Runtime,
+    querier: &Querier,
+    scope: &HashMap<String, Val>,
+    literal: parser::Literal<'_>,
+    preferred_type: Option<&component::Type>,
+) -> anyhow::Result<Val> {
+    match literal {
+        parser::Literal::Record(r) => {
+            let ty = match preferred_type {
+                Some(component::Type::Record(r)) => r,
+                Some(t) => bail!("expected record got {t:?}"),
+                None => bail!("cannot determine type of record"),
+            };
+            let mut values = Vec::new();
+            for ((name, field_expr), field_type) in r.fields.into_iter().zip(ty.fields()) {
+                values.push((
+                    name,
+                    eval(runtime, querier, scope, field_expr, Some(&field_type.ty))?,
+                ));
+            }
+            Ok(Val::Record(Record::new(ty, values)?))
+        }
+        parser::Literal::String(s) => Ok(Val::String(s.to_owned().into())),
         parser::Literal::Num(n) => match preferred_type {
-            Some(wit_parser::Type::U8) => Val::U8(n.try_into().unwrap()),
-            _ => Val::S32(n.try_into().unwrap()),
+            Some(component::Type::U8) => Ok(Val::U8(n.try_into()?)),
+            _ => Ok(Val::S32(n.try_into()?)),
+        },
+        parser::Literal::Ident(i) => match preferred_type {
+            Some(t) => match t {
+                component::Type::Enum(e) => e.new_val(i),
+                component::Type::U8 => scope
+                    .get(i)
+                    .cloned()
+                    .with_context(|| format!("ident {i} is not in scope")),
+                t => todo!("handle ident with type {t:?}"),
+            },
+            None => bail!("could not determine type of '{i}'"),
         },
     }
 }
@@ -323,7 +328,7 @@ fn format_world_item(item: &wit_parser::WorldItem, querier: &Querier) -> String 
                 )
                 .unwrap();
             }
-            output.push_str("}");
+            output.push('}');
             output
         }
         wit_parser::WorldItem::Type(_) => "type".into(),
