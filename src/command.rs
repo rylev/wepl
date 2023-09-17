@@ -8,17 +8,19 @@ use wasmtime::component::Val;
 use crate::evaluator::Evaluator;
 use crate::wit::Expansion;
 
+use self::parser::SpannedStr;
+
 use super::runtime::Runtime;
 use super::wit::Querier;
 
 pub enum Cmd<'a> {
     BuiltIn {
-        name: &'a str,
-        args: Vec<&'a str>,
+        name: SpannedStr<'a>,
+        args: Vec<SpannedStr<'a>>,
     },
     Eval(parser::Expr<'a>),
     Assign {
-        ident: &'a str,
+        ident: SpannedStr<'a>,
         value: parser::Expr<'a>,
     },
 }
@@ -59,12 +61,12 @@ impl<'a> Cmd<'a> {
                     let val = eval.eval_literal(l, None)?;
                     println!("{}: {}", format_val(&val), val_as_type(&val));
                 }
-                parser::Expr::Ident(ident) => match scope.get(ident) {
+                parser::Expr::Ident(ident) => match scope.get(&*ident) {
                     Some(val) => {
                         println!("{}: {}", format_val(val), val_as_type(val))
                     }
                     None => {
-                        let item = querier.export(ident).or_else(|| querier.import(ident));
+                        let item = querier.export(&ident).or_else(|| querier.import(&ident));
                         match item {
                             Some(item) => {
                                 let typ = format_world_item(item, querier);
@@ -77,7 +79,7 @@ impl<'a> Cmd<'a> {
                     }
                 },
                 parser::Expr::FunctionCall(name, args) => {
-                    let results = eval.call_func(name, args)?;
+                    let results = eval.call_func(&name, args)?;
                     println!(
                         "{}",
                         results
@@ -91,15 +93,12 @@ impl<'a> Cmd<'a> {
             Cmd::Assign { ident, value } => {
                 let val = eval.eval(value, None)?;
                 println!("{}: {}", ident, val_as_type(&val));
-                scope.insert(ident.to_owned(), val);
+                scope.insert(ident.into(), val);
             }
-            Cmd::BuiltIn {
-                name: "exports",
-                args,
-            } => {
+            Cmd::BuiltIn { name, args } if name == "exports" => {
                 let &[] = args.as_slice() else {
                     bail!(
-                        "wrong number of arguments to imports function. Expected 0 got {}",
+                        "wrong number of arguments to exports function. Expected 0 got {}",
                         args.len()
                     )
                 };
@@ -109,13 +108,10 @@ impl<'a> Cmd<'a> {
                     println!("{export_name}: {typ}");
                 }
             }
-            Cmd::BuiltIn {
-                name: "imports",
-                args,
-            } => {
+            Cmd::BuiltIn { name, args } if name == "imports" => {
                 let include_wasi = match args.as_slice() {
                     [] => true,
-                    ["--no-wasi"] => false,
+                    [flag] if *flag == "--no-wasi" => false,
                     [flag] => {
                         bail!("unrecorgnized flag for imports builtin '{}'", flag)
                     }
@@ -132,10 +128,10 @@ impl<'a> Cmd<'a> {
                     println!("{}: {typ}", import_name.bold());
                 }
             }
-            Cmd::BuiltIn { name: "type", args } => {
+            Cmd::BuiltIn { name, args } if name == "type" => {
                 match args.as_slice() {
                     &[name] => {
-                        let types = querier.types_by_name(name);
+                        let types = querier.types_by_name(&*name);
                         for (interface, ty) in &types {
                             let typ = querier.display_wit_type_def(ty, Expansion::Expanded(1));
                             let name = &ty.name;
@@ -154,10 +150,7 @@ impl<'a> Cmd<'a> {
                     ),
                 };
             }
-            Cmd::BuiltIn {
-                name: "compose",
-                args,
-            } => {
+            Cmd::BuiltIn { name, args } if name == "compose" => {
                 let &[path] = args.as_slice() else {
                     bail!(
                         "wrong number of arguments to compose function. Expected 1 got {}",
@@ -165,28 +158,22 @@ impl<'a> Cmd<'a> {
                     )
                 };
                 let adapter =
-                    std::fs::read(path).context("could not read path to adapter module")?;
+                    std::fs::read(&*path).context("could not read path to adapter module")?;
                 runtime.compose(&adapter)?;
                 *querier = Querier::from_bytes(runtime.component_bytes())?;
             }
-            Cmd::BuiltIn { name: "link", args } => {
+            Cmd::BuiltIn { name, args } if name == "link" => {
                 let &[func_name, component] = args.as_slice() else {
                     bail!("wrong number of arguments. Expected 2 got {}", args.len())
                 };
 
-                let component_bytes = std::fs::read(component)
+                let component_bytes = std::fs::read(&*component)
                     .with_context(|| format!("could not read component '{component}'"))?;
-                querier.check_dynamic_import(func_name, &component_bytes)?;
+                querier.check_dynamic_import(&*func_name, &component_bytes)?;
                 runtime.stub_function(func_name.into(), &component_bytes)?;
             }
-            Cmd::BuiltIn {
-                name: "help",
-                args: _,
-            } => print_help(),
-            Cmd::BuiltIn {
-                name: "clear",
-                args: _,
-            } => return Ok(true),
+            Cmd::BuiltIn { name, args: _ } if name == "help" => print_help(),
+            Cmd::BuiltIn { name, args: _ } if name == "clear" => return Ok(true),
             Cmd::BuiltIn { name, args: _ } => {
                 bail!("Unrecognized built-in function '{name}'")
             }

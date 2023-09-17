@@ -33,7 +33,7 @@ impl<'a> Evaluator<'a> {
     ) -> anyhow::Result<Val> {
         match expr {
             parser::Expr::Literal(l) => self.eval_literal(l, type_hint),
-            parser::Expr::Ident(ident) => self.resolve_ident(ident, type_hint),
+            parser::Expr::Ident(ident) => self.resolve_ident(&*ident, type_hint),
             parser::Expr::FunctionCall(name, mut args) => {
                 log::debug!(
                     "Checking for type constructor for {name} #args={} type_hint={type_hint:?}",
@@ -62,7 +62,7 @@ impl<'a> Evaluator<'a> {
                     _ => {}
                 }
 
-                let mut results = self.call_func(name, args)?;
+                let mut results = self.call_func(&*name, args)?;
                 if results.len() != 1 {
                     bail!(
                         "Expected function '{name}'to return one result but got {}",
@@ -134,16 +134,20 @@ impl<'a> Evaluator<'a> {
                     .map(|(index, field)| (field.name, index))
                     .collect::<HashMap<_, _>>();
                 // Sort the fields since wasmtime expects the fields to be in the defined order
-                r.fields
-                    .sort_by(|(f1, _), (f2, _)| types.get(f1).unwrap().cmp(types.get(f2).unwrap()));
+                r.fields.sort_by(|(f1, _), (f2, _)| {
+                    types
+                        .get(f1.as_str())
+                        .unwrap()
+                        .cmp(types.get(f2.as_str()).unwrap())
+                });
 
                 for ((name, field_expr), field_type) in r.fields.into_iter().zip(ty.fields()) {
-                    values.push((name, self.eval(field_expr, Some(&field_type.ty))?));
+                    values.push((name.as_str(), self.eval(field_expr, Some(&field_type.ty))?));
                 }
                 Ok(Val::Record(Record::new(ty, values)?))
             }
             parser::Literal::String(s) => {
-                let val = Val::String(s.to_owned().into());
+                let val = Val::String(s.as_str().to_owned().into());
                 match type_hint {
                     Some(component::Type::Result(r)) => r.new_val(match (r.ok(), r.err()) {
                         (Some(_), _) => Ok(Some(val)),
