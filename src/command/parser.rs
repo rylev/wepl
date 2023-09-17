@@ -63,7 +63,7 @@ pub fn special_char(input: Span) -> nom::IResult<Span, (Span, Vec<Span>)> {
 pub enum Expr<'a> {
     Literal(Literal<'a>),
     Ident(SpannedStr<'a>),
-    FunctionCall(SpannedStr<'a>, Vec<Expr<'a>>),
+    FunctionCall(FunctionIdent<'a>, Vec<Expr<'a>>),
 }
 
 impl<'a> Expr<'a> {
@@ -75,6 +75,87 @@ impl<'a> Expr<'a> {
             map(ident, |i| Expr::Ident(i.into())),
             map(Literal::parse, Expr::Literal),
         ))(input)
+    }
+}
+
+#[derive(Debug, PartialEq, Copy, Clone)]
+pub struct FunctionIdent<'a> {
+    pub interface: Option<InterfaceIdent<'a>>,
+    pub function: SpannedStr<'a>,
+}
+
+impl<'a> FunctionIdent<'a> {
+    pub fn parse(input: Span<'a>) -> nom::IResult<Span<'a>, FunctionIdent<'a>> {
+        fn with_interface(input: Span<'_>) -> nom::IResult<Span<'_>, FunctionIdent<'_>> {
+            let (rest, interface) = InterfaceIdent::parse(input)?;
+            let (rest, _) = tag("#")(rest)?;
+            let (rest, function) = cut(ident)(rest)?;
+            Ok((
+                rest,
+                FunctionIdent {
+                    interface: Some(interface),
+                    function: function.into(),
+                },
+            ))
+        }
+        alt((
+            with_interface,
+            map(ident, |f| Self {
+                interface: None,
+                function: f.into(),
+            }),
+        ))(input)
+    }
+}
+
+impl std::fmt::Display for FunctionIdent<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(interface) = self.interface {
+            write!(f, "{interface}#")?
+        }
+        write!(f, "{}", self.function)
+    }
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub struct InterfaceIdent<'a> {
+    package: Option<(SpannedStr<'a>, SpannedStr<'a>)>,
+    interface: SpannedStr<'a>,
+}
+
+impl<'a> InterfaceIdent<'a> {
+    fn parse(input: Span<'a>) -> nom::IResult<Span, Self> {
+        fn prefixed<'a>(input: Span<'a>) -> nom::IResult<Span, InterfaceIdent<'a>> {
+            let (rest, namespace) = ident(input)?;
+            let (rest, _) = tag(":")(rest)?;
+            let (rest, package) = cut(ident)(rest)?;
+            let (rest, _) = cut(tag("/"))(rest)?;
+            let (rest, interface) = cut(ident)(rest)?;
+            Ok((
+                rest,
+                InterfaceIdent {
+                    package: Some((namespace.into(), package.into())),
+                    interface: interface.into(),
+                },
+            ))
+        }
+
+        alt((
+            prefixed,
+            map(ident, |i| Self {
+                package: None,
+                interface: i.into(),
+            }),
+        ))(input)
+    }
+}
+
+impl std::fmt::Display for InterfaceIdent<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some((namespace, package)) = self.package {
+            write!(f, "{namespace}:{package}/")?;
+        }
+        write!(f, "{}", self.interface)
     }
 }
 
@@ -130,8 +211,8 @@ fn assignment(input: Span) -> nom::IResult<Span, (Span, Expr<'_>)> {
     Ok((r, (ident, value)))
 }
 
-pub fn function_call(input: Span) -> nom::IResult<Span, (Span, Vec<Expr<'_>>)> {
-    let (rest, ident) = ident(input)?;
+pub fn function_call(input: Span) -> nom::IResult<Span, (FunctionIdent<'_>, Vec<Expr<'_>>)> {
+    let (rest, ident) = FunctionIdent::parse(input)?;
     let (rest, _) = tag("(")(rest)?;
     let (rest, args) = cut(separated_list0(tag(","), Expr::parse))(rest)?;
     let (rest, _) = cut(tag(")"))(rest)?;
@@ -234,11 +315,57 @@ mod tests {
         assert_eq!(
             result,
             Line::Expr(Expr::FunctionCall(
-                ("my-func", 0).into(),
+                FunctionIdent {
+                    interface: None,
+                    function: ("my-func", 0).into()
+                },
                 vec![Expr::FunctionCall(
-                    ("my-other-func", 8).into(),
+                    FunctionIdent {
+                        interface: None,
+                        function: ("my-other-func", 8).into()
+                    },
                     vec![Expr::Literal(Literal::String(("arg", 23).into()))]
                 )]
+            ))
+        );
+    }
+
+    #[test]
+    fn namespaced_interface_function_call() {
+        let input = r#"wasi:cli/terminal-stderr#my-func()"#;
+        let (rest, result) = Line::parse(input).unwrap();
+        assert!(rest.is_empty());
+        assert_eq!(
+            result,
+            Line::Expr(Expr::FunctionCall(
+                FunctionIdent {
+                    interface: Some(InterfaceIdent {
+                        package: Some((("wasi", 0).into(), ("cli", 5).into())),
+                        interface: ("terminal-stderr", 9).into()
+                    }),
+                    function: ("my-func", 25).into()
+                },
+                vec![]
+            ))
+        );
+    }
+
+    #[test]
+    fn interface_function_call() {
+        let input = r#"terminal-stderr#my-func()"#;
+        let (rest, result) = Line::parse(input).unwrap();
+        assert!(rest.is_empty());
+        assert_eq!(
+            result,
+            Line::Expr(Expr::FunctionCall(
+                FunctionIdent {
+                    interface: Some(InterfaceIdent {
+                        package: None,
+                        interface: ("terminal-stderr", 0).into()
+                    }),
+                    function: ("my-func", 16).into()
+                },
+                vec![]
             ))
         );
     }
@@ -259,14 +386,20 @@ mod tests {
         assert_eq!(
             result,
             Line::Expr(Expr::FunctionCall(
-                ("my-func", 0).into(),
+                FunctionIdent {
+                    interface: None,
+                    function: ("my-func", 0).into()
+                },
                 vec![Expr::Literal(Literal::Record(Record {
                     fields: vec![
                         (("n", 9).into(), Expr::Literal(Literal::Num(1))),
                         (
                             ("name", 15).into(),
                             Expr::FunctionCall(
-                                ("err", 24).into(),
+                                FunctionIdent {
+                                    interface: None,
+                                    function: ("err", 24).into()
+                                },
                                 vec![Expr::Literal(Literal::String(("string", 29).into()))]
                             )
                         )

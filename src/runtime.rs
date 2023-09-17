@@ -8,6 +8,8 @@ use wasmtime::{
 use wasmtime_wasi::preview2::{Table, WasiCtx, WasiCtxBuilder, WasiView};
 use wit_parser::FunctionKind;
 
+use crate::command::parser::FunctionIdent;
+
 use super::wit::Querier;
 
 pub struct Runtime {
@@ -46,7 +48,7 @@ impl Runtime {
                         })?;
                 }
                 wit_parser::WorldItem::Interface(i) => {
-                    let interface = querier.interface(*i).unwrap();
+                    let interface = querier.interface_by_id(*i).unwrap();
                     let mut root = linker.root();
                     let mut instance = root.instance(&import_name)?;
                     for (_, f) in interface.functions.iter() {
@@ -77,26 +79,33 @@ impl Runtime {
         })
     }
 
-    pub fn get_func(&mut self, name: &str) -> anyhow::Result<Func> {
-        self.instance
-            .exports(&mut self.store)
-            .root()
-            .func(name)
-            .with_context(|| format!("could not find function {name}' in instance"))
+    pub fn get_func(&mut self, ident: FunctionIdent) -> anyhow::Result<Func> {
+        let func = match ident.interface {
+            Some(i) => {
+                let mut exports = self.instance.exports(&mut self.store);
+                let instance_name = i.to_string();
+                exports
+                    .instance(&instance_name)
+                    .with_context(|| {
+                        format!("could not find exported instance with name '{instance_name}'")
+                    })?
+                    .func(&ident.function)
+            }
+            None => self
+                .instance
+                .exports(&mut self.store)
+                .root()
+                .func(&ident.function),
+        };
+        func.with_context(|| format!("could not find function '{ident}' in instance"))
     }
 
     pub fn call_func(
         &mut self,
-        name: &str,
+        func: Func,
         args: &[Val],
         result_count: usize,
     ) -> anyhow::Result<Vec<Val>> {
-        let func = self
-            .instance
-            .exports(&mut self.store)
-            .root()
-            .func(name)
-            .with_context(|| format!("could not find function {name}' in instance"))?;
         let mut results = vec![Val::Bool(Default::default()); result_count];
         func.call(&mut self.store, args, &mut results)?;
         func.post_return(&mut self.store)?;
@@ -107,27 +116,59 @@ impl Runtime {
     ///
     /// This function does not check that the component in `components_bytes` has the
     /// export needed.
-    pub fn stub_function(&mut self, name: String, component_bytes: &[u8]) -> anyhow::Result<()> {
+    pub fn stub_function(
+        &mut self,
+        import_ident: FunctionIdent<'_>,
+        export_ident: FunctionIdent<'_>,
+        component_bytes: &[u8],
+    ) -> anyhow::Result<()> {
         let component = load_component(&self.engine, component_bytes)?;
         let mut linker = Linker::<ImportImplsContext>::new(&self.engine);
         wasmtime_wasi::preview2::command::sync::add_to_linker(&mut linker)?;
-        let instance =
-            linker.instantiate(&mut *self.import_impls.store.lock().unwrap(), &component)?;
-        let func = instance
-            .get_func(&mut *self.import_impls.store.lock().unwrap(), &name)
-            .unwrap();
+        let export_func = {
+            let mut store_lock = self.import_impls.store.lock().unwrap();
+            let export_instance = linker.instantiate(&mut *store_lock, &component)?;
+            match export_ident.interface {
+                Some(interface) => {
+                    let mut export = export_instance.exports(&mut *store_lock);
+                    let mut instance = export
+                        .instance(&interface.to_string())
+                        .with_context(|| format!("no export named '{interface} found'"))?;
+                    instance.func(&export_ident.function)
+                }
+                None => export_instance.get_func(&mut *store_lock, &export_ident.function),
+            }
+        }
+        .with_context(|| format!("no function found named '{export_ident}'"))?;
 
         let store = self.import_impls.store.clone();
-        self.linker.root().func_new(
-            &self.component.0,
-            &name.clone(),
-            move |_ctx, args, results| {
-                let mut store = store.lock().unwrap();
-                func.call(&mut *store, args, results)?;
-                func.post_return(&mut *store)?;
-                Ok(())
-            },
-        )?;
+        let name = import_ident.function.as_str().to_owned();
+        match import_ident.interface {
+            Some(interface) => {
+                let mut instance = self
+                    .linker
+                    .instance(&interface.to_string())
+                    .with_context(|| format!("no interface named '{interface}' found"))?;
+                instance.func_new(&self.component.0, &name, move |_ctx, args, results| {
+                    let mut store = store.lock().unwrap();
+                    export_func.call(&mut *store, args, results)?;
+                    export_func.post_return(&mut *store)?;
+                    Ok(())
+                })?;
+            }
+            None => {
+                self.linker.root().func_new(
+                    &self.component.0,
+                    &name,
+                    move |_ctx, args, results| {
+                        let mut store = store.lock().unwrap();
+                        export_func.call(&mut *store, args, results)?;
+                        export_func.post_return(&mut *store)?;
+                        Ok(())
+                    },
+                )?;
+            }
+        }
         self.refresh()?;
         Ok(())
     }

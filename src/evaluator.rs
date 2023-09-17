@@ -3,7 +3,11 @@ use std::collections::HashMap;
 use anyhow::{bail, Context};
 use wasmtime::component::{self, Record, Val};
 
-use crate::{command::parser, runtime::Runtime, wit::Querier};
+use crate::{
+    command::parser::{self, FunctionIdent},
+    runtime::Runtime,
+    wit::Querier,
+};
 
 pub struct Evaluator<'a> {
     runtime: &'a mut Runtime,
@@ -34,26 +38,30 @@ impl<'a> Evaluator<'a> {
         match expr {
             parser::Expr::Literal(l) => self.eval_literal(l, type_hint),
             parser::Expr::Ident(ident) => self.resolve_ident(&*ident, type_hint),
-            parser::Expr::FunctionCall(name, mut args) => {
+            parser::Expr::FunctionCall(ident, mut args) => {
                 log::debug!(
-                    "Checking for type constructor for {name} #args={} type_hint={type_hint:?}",
+                    "Checking for type constructor for {ident} #args={} type_hint={type_hint:?}",
                     args.len()
                 );
                 // If the preferred type has some sort of type constructor, try that first
                 match type_hint {
-                    Some(component::Type::Option(o)) if name == "some" && args.len() == 1 => {
+                    Some(component::Type::Option(o))
+                        if ident.interface.is_none()
+                            && ident.function == "some"
+                            && args.len() == 1 =>
+                    {
                         let val = self.eval(args.remove(0), Some(&o.ty()))?;
                         return o.new_val(Some(val));
                     }
                     Some(component::Type::Result(r)) if args.len() == 1 => {
                         if let Some(ok) = r.ok() {
-                            if name == "ok" {
+                            if ident.interface.is_none() && ident.function == "ok" {
                                 let val = self.eval(args.remove(0), Some(&ok))?;
                                 return r.new_val(Ok(Some(val)));
                             }
                         }
                         if let Some(err) = r.err() {
-                            if name == "err" {
+                            if ident.interface.is_none() && ident.function == "err" {
                                 let val = self.eval(args.remove(0), Some(&err))?;
                                 return r.new_val(Err(Some(val)));
                             }
@@ -62,10 +70,10 @@ impl<'a> Evaluator<'a> {
                     _ => {}
                 }
 
-                let mut results = self.call_func(&*name, args)?;
+                let mut results = self.call_func(ident, args)?;
                 if results.len() != 1 {
                     bail!(
-                        "Expected function '{name}'to return one result but got {}",
+                        "Expected function '{ident}' to return one result but got {}",
                         results.len()
                     )
                 }
@@ -77,14 +85,14 @@ impl<'a> Evaluator<'a> {
     /// Call the function
     pub fn call_func(
         &mut self,
-        name: &str,
+        ident: FunctionIdent,
         args: Vec<parser::Expr<'_>>,
     ) -> anyhow::Result<Vec<Val>> {
-        log::debug!("Calling function: {name} with args: {args:?}");
+        log::debug!("Calling function: {ident} with args: {args:?}");
         let func_def = self
             .querier
-            .exported_function(name)
-            .with_context(|| format!("no export with name '{name}'"))?;
+            .exported_function(ident)
+            .with_context(|| format!("no function with name '{ident}'"))?;
         let mut evaled_args = Vec::with_capacity(func_def.params.len());
         if func_def.params.len() != args.len() {
             bail!(
@@ -93,7 +101,7 @@ impl<'a> Evaluator<'a> {
                 args.len()
             )
         }
-        let func = self.runtime.get_func(name)?;
+        let func = self.runtime.get_func(ident)?;
         let names = func_def.params.iter().map(|(n, _)| n);
         let types = func.params(&mut self.runtime.store);
         for (param_name, (param_type, arg)) in names.zip(types.iter().zip(args)) {
@@ -102,9 +110,9 @@ impl<'a> Evaluator<'a> {
                 .map_err(|e| anyhow::anyhow!("argument '{param_name}': {e}"))?;
             evaled_args.push(evaled_arg);
         }
-        let results =
-            self.runtime
-                .call_func(&func_def.name, &evaled_args, func_def.results.len())?;
+        let results = self
+            .runtime
+            .call_func(func, &evaled_args, func_def.results.len())?;
         Ok(results)
     }
 

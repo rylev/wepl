@@ -5,13 +5,13 @@ use anyhow::{anyhow, bail, Context as _};
 use colored::Colorize;
 use wasmtime::component::Val;
 
-use crate::evaluator::Evaluator;
-use crate::wit::Expansion;
-
-use self::parser::SpannedStr;
+use self::parser::FunctionIdent;
 
 use super::runtime::Runtime;
 use super::wit::Querier;
+use crate::evaluator::Evaluator;
+use crate::wit::Expansion;
+use parser::SpannedStr;
 
 pub enum Cmd<'a> {
     BuiltIn {
@@ -78,8 +78,8 @@ impl<'a> Cmd<'a> {
                         }
                     }
                 },
-                parser::Expr::FunctionCall(name, args) => {
-                    let results = eval.call_func(&name, args)?;
+                parser::Expr::FunctionCall(ident, args) => {
+                    let results = eval.call_func(ident, args)?;
                     println!(
                         "{}",
                         results
@@ -163,14 +163,20 @@ impl<'a> Cmd<'a> {
                 *querier = Querier::from_bytes(runtime.component_bytes())?;
             }
             Cmd::BuiltIn { name, args } if name == "link" => {
-                let &[func_name, component] = args.as_slice() else {
-                    bail!("wrong number of arguments. Expected 2 got {}", args.len())
+                let &[import_ident, export_ident, component] = args.as_slice() else {
+                    bail!("wrong number of arguments. Expected 3 got {}", args.len())
+                };
+                let Ok((_, import_ident)) = FunctionIdent::parse((&*import_ident).into()) else {
+                    bail!("'{import_ident}' is not a proper function identifier");
+                };
+                let Ok((_, export_ident)) = FunctionIdent::parse((&*export_ident).into()) else {
+                    bail!("'{export_ident}' is not a proper function identifier");
                 };
 
-                let component_bytes = std::fs::read(&*component)
+                let component_bytes = std::fs::read(component.as_str())
                     .with_context(|| format!("could not read component '{component}'"))?;
-                querier.check_dynamic_import(&*func_name, &component_bytes)?;
-                runtime.stub_function(func_name.into(), &component_bytes)?;
+                querier.check_dynamic_import(import_ident, export_ident, &component_bytes)?;
+                runtime.stub_function(import_ident, export_ident, &component_bytes)?;
             }
             Cmd::BuiltIn { name, args: _ } if name == "help" => print_help(),
             Cmd::BuiltIn { name, args: _ } if name == "clear" => return Ok(true),
@@ -204,7 +210,7 @@ fn format_world_item(item: &wit_parser::WorldItem, querier: &Querier) -> String 
         wit_parser::WorldItem::Function(f) => format_function(f, querier),
         wit_parser::WorldItem::Interface(id) => {
             use std::fmt::Write;
-            let interface = querier.interface(*id).unwrap();
+            let interface = querier.interface_by_id(*id).unwrap();
             let mut output = String::from("{\n");
             for (_, fun) in &interface.functions {
                 writeln!(

@@ -2,7 +2,11 @@ use std::borrow::Cow;
 
 use anyhow::Context;
 use wit_component::DecodedWasm;
-use wit_parser::{Function, InterfaceId, Resolve, TypeDef, World, WorldId, WorldItem, WorldKey};
+use wit_parser::{
+    Function, Interface, InterfaceId, Resolve, TypeDef, World, WorldId, WorldItem, WorldKey,
+};
+
+use crate::command::parser::{FunctionIdent, InterfaceIdent};
 
 pub struct Querier {
     resolve: Resolve,
@@ -30,20 +34,59 @@ impl Querier {
         Ok(Self::new(resolve, world))
     }
 
-    pub fn exported_function(&self, name: &str) -> Option<&Function> {
-        let export = self.export(name)?;
-        match export {
-            wit_parser::WorldItem::Function(f) => Some(f),
-            _ => None,
+    pub fn exported_function(&self, ident: FunctionIdent) -> Option<&Function> {
+        match ident.interface {
+            Some(i) => {
+                let interface = self.exported_interface(i)?;
+                interface.functions.get(ident.function.as_str())
+            }
+            None => {
+                if let WorldItem::Function(f) = &self.export(ident.function.as_str())? {
+                    Some(f)
+                } else {
+                    None
+                }
+            }
         }
     }
 
-    pub fn imported_function(&self, name: &str) -> Option<&Function> {
-        let export = self.import(name)?;
-        match export {
-            wit_parser::WorldItem::Function(f) => Some(f),
-            _ => None,
+    pub fn imported_function(&self, ident: FunctionIdent) -> Option<&Function> {
+        match ident.interface {
+            Some(i) => {
+                let interface = self.imported_interface(i)?;
+                interface.functions.get(ident.function.as_str())
+            }
+            None => {
+                if let WorldItem::Function(f) = &self.export(ident.function.as_str())? {
+                    Some(f)
+                } else {
+                    None
+                }
+            }
         }
+    }
+
+    pub fn exported_interface(&self, ident: InterfaceIdent) -> Option<&Interface> {
+        self.interface_in_items(ident, self.world().exports.iter())
+    }
+
+    pub fn imported_interface(&self, ident: InterfaceIdent) -> Option<&Interface> {
+        self.interface_in_items(ident, self.world().imports.iter())
+    }
+
+    pub fn interface_in_items<'a>(
+        &self,
+        ident: InterfaceIdent,
+        mut items: impl Iterator<Item = (&'a WorldKey, &'a WorldItem)>,
+    ) -> Option<&Interface> {
+        items.find_map(|(export_name, export)| {
+            if self.resolve.name_world_key(&export_name) == ident.to_string() {
+                if let WorldItem::Interface(i) = export {
+                    return Some(self.resolve.interfaces.get(*i).unwrap());
+                }
+            }
+            None
+        })
     }
 
     pub fn export(&self, name: &str) -> Option<&WorldItem> {
@@ -54,7 +97,7 @@ impl Querier {
         self.get_world_item_by_name(self.world().imports.iter(), name)
     }
 
-    pub fn interface(&self, id: InterfaceId) -> Option<&wit_parser::Interface> {
+    pub fn interface_by_id(&self, id: InterfaceId) -> Option<&wit_parser::Interface> {
         self.resolve.interfaces.get(id)
     }
 
@@ -232,17 +275,10 @@ impl Querier {
             .imports
             .iter()
             .filter_map(|(import_name, import)| {
-                if let WorldKey::Interface(i) = import_name {
-                    let interface = self.resolve.interfaces.get(*i).unwrap();
-                    if let Some(package_id) = &interface.package {
-                        let package = self.resolve.packages.get(*package_id).unwrap();
-                        if package.name.namespace == "wasi" {
-                            return None;
-                        }
-                    }
-                }
-                let import_name = self.resolve.name_world_key(import_name);
-                Some((import_name, import))
+                let import_name = self.world_item_name(import_name);
+                import_name
+                    .starts_with("wasi/")
+                    .then_some((import_name, import))
             })
     }
 
@@ -263,16 +299,17 @@ impl Querier {
 
     pub(crate) fn check_dynamic_import(
         &self,
-        func_name: &str,
+        import_ident: FunctionIdent<'_>,
+        export_ident: FunctionIdent<'_>,
         component_bytes: &[u8],
     ) -> anyhow::Result<()> {
         let other = Self::from_bytes(component_bytes)?;
         let import = self
-            .imported_function(func_name)
-            .with_context(|| format!("no import with name '{func_name}'"))?;
+            .imported_function(import_ident)
+            .with_context(|| format!("no import with name '{import_ident}'"))?;
         let export = other
-            .exported_function(func_name)
-            .with_context(|| format!("no export with name '{func_name}'"))?;
+            .exported_function(export_ident)
+            .with_context(|| format!("no export with name '{export_ident}'"))?;
         if import.params != export.params {
             anyhow::bail!("params not equal")
         }
@@ -302,7 +339,7 @@ impl Querier {
             .iter()
             .filter(move |(_, item)| match item {
                 WorldItem::Interface(id) if !include_wasi => {
-                    let interface = self.interface(*id).unwrap();
+                    let interface = self.interface_by_id(*id).unwrap();
                     let Some(package) = interface.package else {
                         return true;
                     };
