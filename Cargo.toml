@@ -14,12 +14,18 @@ rustyline = "12.0.0"
 colored = "2"
 tokio = { version = "1.0", features = ["macros"] }
 
-wasmtime = { git = "https://github.com/bytecodealliance/wasmtime", rev = "409bdd0330d9525846cc199f5bfe95b6a695f735", features = [
+wasmtime = { path = "../wasmtime/crates/wasmtime", features = [
     "component-model",
 ] }
-wasmtime-wasi = { git = "https://github.com/bytecodealliance/wasmtime", rev = "409bdd0330d9525846cc199f5bfe95b6a695f735", features = [
-    "tokio",
-] }
+wasmtime-wasi = { path = "../wasmtime/crates/wasi", features = ["tokio"] }
+
+
+# wasmtime = { git = "https://github.com/bytecodealliance/wasmtime", rev = "409bdd0330d9525846cc199f5bfe95b6a695f735", features = [
+#     "component-model",
+# ] }
+# wasmtime-wasi = { git = "https://github.com/bytecodealliance/wasmtime", rev = "409bdd0330d9525846cc199f5bfe95b6a695f735", features = [
+#     "tokio",
+# ] }
 wasi-virt = { git = "https://github.com/bytecodealliance/WASI-Virt", rev = "c485962a7cb44637005fb6cfc3cf1515d81fe418" }
 wit-component = { git = "https://github.com/bytecodealliance/wasm-tools", rev = "e2af293273db65712b6f31da85f7aa5eb31abfde" }
 wit-parser = { git = "https://github.com/bytecodealliance/wasm-tools", rev = "e2af293273db65712b6f31da85f7aa5eb31abfde" }

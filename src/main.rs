@@ -38,6 +38,8 @@ fn _main() -> anyhow::Result<()> {
     if let Some(home) = home::home_dir() {
         let _ = rl.load_history(&home.join(".weplhistory"));
     }
+    let world = querier.world_name();
+    println!("{}: {world}", "World".blue().bold());
     let mut scope = HashMap::default();
     let prompt = "> ".blue().bold().to_string();
     loop {

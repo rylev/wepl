@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use anyhow::{bail, Context};
-use wasmtime::component::{self, Record, Val};
+use wasmtime::component::{self, List, Record, Val};
 
 use crate::{
     command::parser::{self, FunctionIdent},
@@ -123,6 +123,24 @@ impl<'a> Evaluator<'a> {
         type_hint: Option<&component::Type>,
     ) -> anyhow::Result<Val> {
         match literal {
+            parser::Literal::List(list) => {
+                let ty = match type_hint {
+                    Some(component::Type::List(l)) => l,
+                    Some(t) => bail!(
+                        "type error - required = {} found = list",
+                        display_component_type(t)
+                    ),
+                    None => {
+                        // TODO: try to find a list type that fits the shape of the literal
+                        bail!("cannot determine type of list")
+                    }
+                };
+                let mut values = Vec::new();
+                for item in list.items {
+                    values.push(self.eval(item, Some(&component::Type::List(ty.clone())))?)
+                }
+                Ok(Val::List(List::new(ty, values.into_boxed_slice())?))
+            }
             parser::Literal::Record(mut r) => {
                 let ty = match type_hint {
                     Some(component::Type::Record(r)) => r,

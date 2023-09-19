@@ -3,7 +3,7 @@ use std::borrow::Cow;
 use anyhow::Context;
 use wit_component::DecodedWasm;
 use wit_parser::{
-    Function, Interface, InterfaceId, Resolve, TypeDef, World, WorldId, WorldItem, WorldKey,
+    Function, Interface, InterfaceId, Resolve, TypeDef, TypeId, World, WorldId, WorldItem, WorldKey,
 };
 
 use crate::command::parser::{FunctionIdent, InterfaceIdent};
@@ -57,7 +57,7 @@ impl Querier {
                 interface.functions.get(ident.function.as_str())
             }
             None => {
-                if let WorldItem::Function(f) = &self.export(ident.function.as_str())? {
+                if let WorldItem::Function(f) = &self.import(ident.function.as_str())? {
                     Some(f)
                 } else {
                     None
@@ -99,6 +99,10 @@ impl Querier {
 
     pub fn interface_by_id(&self, id: InterfaceId) -> Option<&wit_parser::Interface> {
         self.resolve.interfaces.get(id)
+    }
+
+    pub fn type_by_id(&self, id: TypeId) -> Option<&TypeDef> {
+        self.resolve.types.get(id)
     }
 
     pub(crate) fn types_by_name(&self, name: &str) -> Vec<(Option<&InterfaceId>, &TypeDef)> {
@@ -270,18 +274,6 @@ impl Querier {
         false
     }
 
-    pub fn non_wasi_imports(&self) -> impl Iterator<Item = (String, &WorldItem)> {
-        self.world()
-            .imports
-            .iter()
-            .filter_map(|(import_name, import)| {
-                let import_name = self.world_item_name(import_name);
-                import_name
-                    .starts_with("wasi/")
-                    .then_some((import_name, import))
-            })
-    }
-
     pub fn world_item_name(&self, name: &WorldKey) -> String {
         self.resolve.name_world_key(name)
     }
@@ -297,28 +289,6 @@ impl Querier {
             .expect("world_id is not found in the resolved wit package")
     }
 
-    pub(crate) fn check_dynamic_import(
-        &self,
-        import_ident: FunctionIdent<'_>,
-        export_ident: FunctionIdent<'_>,
-        component_bytes: &[u8],
-    ) -> anyhow::Result<()> {
-        let other = Self::from_bytes(component_bytes)?;
-        let import = self
-            .imported_function(import_ident)
-            .with_context(|| format!("no import with name '{import_ident}'"))?;
-        let export = other
-            .exported_function(export_ident)
-            .with_context(|| format!("no export with name '{export_ident}'"))?;
-        if import.params != export.params {
-            anyhow::bail!("params not equal")
-        }
-        if import.results != export.results {
-            anyhow::bail!("return values not equal")
-        }
-
-        Ok(())
-    }
     fn get_world_item_by_name<'a>(
         &self,
         mut items: impl Iterator<Item = (&'a WorldKey, &'a WorldItem)>,
@@ -348,6 +318,17 @@ impl Querier {
                 }
                 _ => true,
             })
+    }
+
+    pub(crate) fn world_name(&self) -> String {
+        let world = self.world();
+        let world_package = if let Some(world_package) = world.package {
+            let world_package = self.resolve.packages.get(world_package).unwrap();
+            format!("{}/", world_package.name)
+        } else {
+            String::new()
+        };
+        format!("{world_package}{}", world.name)
     }
 }
 

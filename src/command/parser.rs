@@ -79,6 +79,21 @@ impl<'a> Expr<'a> {
 }
 
 #[derive(Debug, PartialEq, Copy, Clone)]
+pub enum ItemIdent<'a> {
+    Function(FunctionIdent<'a>),
+    Interface(InterfaceIdent<'a>),
+}
+
+impl<'a> ItemIdent<'a> {
+    pub fn parse(input: Span<'a>) -> nom::IResult<Span<'a>, ItemIdent<'a>> {
+        alt((
+            map(InterfaceIdent::parse, |i| ItemIdent::Interface(i)),
+            map(FunctionIdent::parse, |f| ItemIdent::Function(f)),
+        ))(input)
+    }
+}
+
+#[derive(Debug, PartialEq, Copy, Clone)]
 pub struct FunctionIdent<'a> {
     pub interface: Option<InterfaceIdent<'a>>,
     pub function: SpannedStr<'a>,
@@ -162,6 +177,7 @@ impl std::fmt::Display for InterfaceIdent<'_> {
 #[derive(Debug, PartialEq)]
 pub enum Literal<'a> {
     Record(Record<'a>),
+    List(List<'a>),
     String(SpannedStr<'a>),
     Num(usize),
 }
@@ -171,8 +187,26 @@ impl<'a> Literal<'a> {
         alt((
             map(number, Literal::Num),
             map(Record::parse, Literal::Record),
+            map(List::parse, Literal::List),
             map(string_literal, |s| Literal::String(s.into())),
         ))(input)
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub struct List<'a> {
+    pub items: Vec<Expr<'a>>,
+}
+
+impl<'a> List<'a> {
+    fn parse(input: Span<'a>) -> nom::IResult<Span, Self> {
+        fn item(input: Span) -> nom::IResult<Span, Expr<'_>> {
+            delimited(multispace0, Expr::parse, multispace0)(input)
+        }
+        let (rest, _) = tag("[")(input)?;
+        let (rest, items) = cut(separated_list0(tag(","), item))(rest)?;
+        let (rest, _) = cut(tag("]"))(rest)?;
+        Ok((rest, Self { items }))
     }
 }
 
