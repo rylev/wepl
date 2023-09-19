@@ -14,10 +14,12 @@ rustyline = "12.0.0"
 colored = "2"
 tokio = { version = "1.0", features = ["macros"] }
 
-wasmtime = { git = "https://github.com/bytecodealliance/wasmtime", rev = "409bdd0330d9525846cc199f5bfe95b6a695f735", features = [
+# Uses a commit from rylev/wasmtime which is the release-13.0.0 branch plus this patch:
+# https://github.com/bytecodealliance/wasmtime/pull/7065
+wasmtime = { git = "https://github.com/rylev/wasmtime", rev = "2c182562d4f89d33ac6cc63668cbe6720c6b326c", features = [
     "component-model",
 ] }
-wasmtime-wasi = { git = "https://github.com/bytecodealliance/wasmtime", rev = "409bdd0330d9525846cc199f5bfe95b6a695f735", features = [
+wasmtime-wasi = { git = "https://github.com/rylev/wasmtime", rev = "2c182562d4f89d33ac6cc63668cbe6720c6b326c", features = [
     "tokio",
 ] }
 wasi-virt = { git = "https://github.com/bytecodealliance/WASI-Virt", rev = "c485962a7cb44637005fb6cfc3cf1515d81fe418" }

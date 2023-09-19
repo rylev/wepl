@@ -5,10 +5,9 @@ use anyhow::{anyhow, bail, Context as _};
 use colored::Colorize;
 use wasmtime::component::Val;
 
-use self::parser::FunctionIdent;
-
 use super::runtime::Runtime;
 use super::wit::Querier;
+use crate::command::parser::ItemIdent;
 use crate::evaluator::Evaluator;
 use crate::wit::Expansion;
 use parser::SpannedStr;
@@ -66,16 +65,7 @@ impl<'a> Cmd<'a> {
                         println!("{}: {}", format_val(val), val_as_type(val))
                     }
                     None => {
-                        let item = querier.export(&ident).or_else(|| querier.import(&ident));
-                        match item {
-                            Some(item) => {
-                                let typ = format_world_item(item, querier);
-                                println!("{ident}: {typ}");
-                            }
-                            None => {
-                                anyhow::bail!("no identifier '{ident}' in scope")
-                            }
-                        }
+                        anyhow::bail!("no identifier '{ident}' in scope")
                     }
                 },
                 parser::Expr::FunctionCall(ident, args) => {
@@ -84,7 +74,7 @@ impl<'a> Cmd<'a> {
                         "{}",
                         results
                             .into_iter()
-                            .map(|v| format!("{}: {}", format_val(&v), val_as_type(&v)))
+                            .map(|v| format!("{}", format_val(&v)))
                             .collect::<Vec<_>>()
                             .join("\n")
                     )
@@ -104,8 +94,9 @@ impl<'a> Cmd<'a> {
                 };
                 for (export_name, export) in querier.world().exports.iter() {
                     let export_name = querier.world_item_name(export_name);
-                    let typ = format_world_item(export, querier);
-                    println!("{export_name}: {typ}");
+                    if let Some(ty) = format_world_item(export, querier) {
+                        println!("{}: {ty}", export_name.bold());
+                    }
                 }
             }
             Cmd::BuiltIn { name, args } if name == "imports" => {
@@ -124,8 +115,9 @@ impl<'a> Cmd<'a> {
                 };
                 for (import_name, import) in querier.imports(include_wasi) {
                     let import_name = querier.world_item_name(import_name);
-                    let typ = format_world_item(import, querier);
-                    println!("{}: {typ}", import_name.bold());
+                    if let Some(ty) = format_world_item(import, querier) {
+                        println!("{}: {ty}", import_name.bold());
+                    }
                 }
             }
             Cmd::BuiltIn { name, args } if name == "type" => {
@@ -166,17 +158,16 @@ impl<'a> Cmd<'a> {
                 let &[import_ident, export_ident, component] = args.as_slice() else {
                     bail!("wrong number of arguments. Expected 3 got {}", args.len())
                 };
-                let Ok((_, import_ident)) = FunctionIdent::parse((&*import_ident).into()) else {
+                let Ok((_, import_ident)) = ItemIdent::parse((&*import_ident).into()) else {
                     bail!("'{import_ident}' is not a proper function identifier");
                 };
-                let Ok((_, export_ident)) = FunctionIdent::parse((&*export_ident).into()) else {
+                let Ok((_, export_ident)) = ItemIdent::parse((&*export_ident).into()) else {
                     bail!("'{export_ident}' is not a proper function identifier");
                 };
 
                 let component_bytes = std::fs::read(component.as_str())
                     .with_context(|| format!("could not read component '{component}'"))?;
-                querier.check_dynamic_import(import_ident, export_ident, &component_bytes)?;
-                runtime.stub_function(import_ident, export_ident, &component_bytes)?;
+                runtime.stub(&querier, import_ident, export_ident, &component_bytes)?;
             }
             Cmd::BuiltIn { name, args: _ } if name == "help" => print_help(),
             Cmd::BuiltIn { name, args: _ } if name == "clear" => return Ok(true),
@@ -205,12 +196,15 @@ There are also builtin functions that can be called with a preceding '.'. Suppor
   .inspect $item            inspect an item `$item` in scope (`?` is alias for this built-in)")
 }
 
-fn format_world_item(item: &wit_parser::WorldItem, querier: &Querier) -> String {
+fn format_world_item(item: &wit_parser::WorldItem, querier: &Querier) -> Option<String> {
     match item {
-        wit_parser::WorldItem::Function(f) => format_function(f, querier),
+        wit_parser::WorldItem::Function(f) => Some(format_function(f, querier)),
         wit_parser::WorldItem::Interface(id) => {
             use std::fmt::Write;
             let interface = querier.interface_by_id(*id).unwrap();
+            if interface.functions.is_empty() {
+                return None;
+            }
             let mut output = String::from("{\n");
             for (_, fun) in &interface.functions {
                 writeln!(
@@ -222,9 +216,9 @@ fn format_world_item(item: &wit_parser::WorldItem, querier: &Querier) -> String 
                 .unwrap();
             }
             output.push('}');
-            output
+            Some(output)
         }
-        wit_parser::WorldItem::Type(_) => "type".into(),
+        wit_parser::WorldItem::Type(_) => None,
     }
 }
 
@@ -262,17 +256,31 @@ fn format_val(val: &Val) -> String {
         Val::Float64(f) => f.to_string(),
         Val::Char(c) => c.to_string(),
         Val::Option(o) => match o.value() {
-            Some(o) => format!("Some({})", format_val(o)),
-            None => "None".into(),
+            Some(o) => format!("some({})", format_val(o)),
+            None => "none".into(),
         },
         Val::Result(r) => match r.value() {
-            Ok(Some(o)) => format!("Ok({})", format_val(o)),
-            Ok(None) => "Ok".to_string(),
-            Err(Some(e)) => format!("Err({})", format_val(e)),
-            Err(None) => "Err".to_string(),
+            Ok(Some(o)) => format!("ok({})", format_val(o)),
+            Ok(None) => "ok".to_string(),
+            Err(Some(e)) => format!("err({})", format_val(e)),
+            Err(None) => "err".to_string(),
         },
-        Val::List(_) => todo!(),
-        Val::Record(_) => todo!(),
+        Val::List(l) => {
+            let items = l
+                .iter()
+                .map(|value| format!("{}", format_val(value)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("[{items}]")
+        }
+        Val::Record(r) => {
+            let fields = r
+                .fields()
+                .map(|(key, value)| format!("{}: {}", key, format_val(value)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{{ {fields} }}")
+        }
         Val::Tuple(_) => todo!(),
         Val::Variant(_) => todo!(),
         Val::Enum(_) => todo!(),
@@ -298,8 +306,8 @@ fn val_as_type(val: &Val) -> &'static str {
         Val::Char(_) => "char",
         Val::Option(_) => "option",
         Val::Result(_) => "result",
-        Val::List(_) => todo!(),
-        Val::Record(_) => todo!(),
+        Val::List(_) => "list",
+        Val::Record(_) => "record",
         Val::Tuple(_) => todo!(),
         Val::Variant(_) => todo!(),
         Val::Enum(_) => todo!(),

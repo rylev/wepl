@@ -1,4 +1,7 @@
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
 use anyhow::Context as _;
 use wasmtime::{
@@ -6,9 +9,8 @@ use wasmtime::{
     Config, Engine, Store,
 };
 use wasmtime_wasi::preview2::{Table, WasiCtx, WasiCtxBuilder, WasiView};
-use wit_parser::FunctionKind;
 
-use crate::command::parser::FunctionIdent;
+use crate::command::parser::{FunctionIdent, InterfaceIdent, ItemIdent};
 
 use super::wit::Querier;
 
@@ -36,10 +38,11 @@ impl Runtime {
             log::debug!("Linking with wasi");
             wasmtime_wasi::preview2::command::sync::add_to_linker(&mut linker)?;
         }
-        for (import_name, import) in querier.non_wasi_imports() {
+        for (import_name, import) in querier.imports(false) {
+            let import_name = querier.world_item_name(import_name);
             let stub_import = stub_import.clone();
             match import {
-                wit_parser::WorldItem::Function(f) if f.kind == FunctionKind::Freestanding => {
+                wit_parser::WorldItem::Function(f) => {
                     linker
                         .root()
                         .func_new(&component, &f.name, move |_ctx, _args, _rets| {
@@ -116,12 +119,142 @@ impl Runtime {
     ///
     /// This function does not check that the component in `components_bytes` has the
     /// export needed.
+    pub fn stub(
+        &mut self,
+        querier: &Querier,
+        import_ident: ItemIdent<'_>,
+        export_ident: ItemIdent<'_>,
+        component_bytes: &[u8],
+    ) -> anyhow::Result<()> {
+        match (import_ident, export_ident) {
+            (ItemIdent::Function(import_ident), ItemIdent::Function(export_ident)) => {
+                self.stub_function(querier, import_ident, export_ident, component_bytes)
+            }
+            (ItemIdent::Interface(import_ident), ItemIdent::Interface(export_ident)) => {
+                self.stub_interface(querier, import_ident, export_ident, component_bytes)
+            }
+            (ItemIdent::Interface(_), ItemIdent::Function(_)) => {
+                anyhow::bail!("cannot satisfy interface import with a function")
+            }
+            (ItemIdent::Function(_), ItemIdent::Interface(_)) => {
+                anyhow::bail!("cannot satisfy function import with an interface")
+            }
+        }
+    }
+
+    pub fn stub_interface(
+        &mut self,
+        querier: &Querier,
+        import_ident: InterfaceIdent<'_>,
+        export_ident: InterfaceIdent<'_>,
+        component_bytes: &[u8],
+    ) -> anyhow::Result<()> {
+        let component = load_component(&self.engine, component_bytes)?;
+        let mut linker = Linker::<ImportImplsContext>::new(&self.engine);
+        wasmtime_wasi::preview2::command::sync::add_to_linker(&mut linker)?;
+        let mut root = self.linker.root();
+        let mut import_instance = root
+            .instance(&import_ident.to_string())
+            .with_context(|| format!("no imported instance named '{import_ident}' found"))?;
+        let import = querier
+            .imported_interface(import_ident)
+            .with_context(|| format!("no imported interface named '{import_ident}' found"))?;
+        let other = Querier::from_bytes(component_bytes)?;
+        let export = other
+            .exported_interface(export_ident)
+            .with_context(|| format!("no exported interface named '{export_ident}' found"))?;
+        for (fun_name, imported_function) in &import.functions {
+            let exported_function = export
+                .functions
+                .get(fun_name)
+                .with_context(|| format!("no exported function named '{fun_name}' found"))?;
+            if imported_function.params.len() != exported_function.params.len() {
+                anyhow::bail!("different number of parameters")
+            }
+            for ((arg_name, p1), (_, p2)) in imported_function
+                .params
+                .iter()
+                .zip(&exported_function.params)
+            {
+                if !types_equal(querier, p1, &other, p2) {
+                    anyhow::bail!("different types for arg '{arg_name}' in function '{fun_name}'")
+                }
+            }
+            match (&imported_function.results, &exported_function.results) {
+                (wit_parser::Results::Named(is), wit_parser::Results::Named(es)) => {
+                    if is.len() != es.len() {
+                        anyhow::bail!("different number of return types")
+                    }
+                    let es = es
+                        .into_iter()
+                        .map(|(name, ty)| (name, ty))
+                        .collect::<HashMap<&String, &wit_parser::Type>>();
+                    for (name, ty) in is {
+                        let e = es.get(name).with_context(|| format!("exported function '{fun_name}' does not have return value '{name}'"))?;
+                        if !types_equal(querier, ty, &other, e) {
+                            anyhow::bail!("return value '{name}' has differing types");
+                        }
+                    }
+                }
+                (wit_parser::Results::Anon(t1), wit_parser::Results::Anon(t2)) => {
+                    if !types_equal(querier, t1, &other, t2) {
+                        anyhow::bail!("return types did not match for function {fun_name}");
+                    }
+                }
+                _ => anyhow::bail!("different return type kinds for function '{fun_name}'"),
+            }
+            let store = self.import_impls.store.clone();
+
+            let export_func = {
+                let mut store_lock = self.import_impls.store.lock().unwrap();
+                let export_instance = linker.instantiate(&mut *store_lock, &component)?;
+                let mut exports = export_instance.exports(&mut *store_lock);
+                let mut export_instance = exports
+                    .instance(&export_ident.to_string())
+                    .with_context(|| {
+                        format!("no exported instance named '{export_ident} found'")
+                    })?;
+                export_instance
+                    .func(&fun_name)
+                    .with_context(|| format!("no exported function named '{fun_name}' found"))?
+            };
+            import_instance.func_new(
+                &self.component.0,
+                &fun_name,
+                move |_ctx, args, results| {
+                    let mut store = store.lock().unwrap();
+                    export_func.call(&mut *store, args, results)?;
+                    export_func.post_return(&mut *store)?;
+                    Ok(())
+                },
+            )?;
+        }
+        self.refresh()?;
+        Ok(())
+    }
+
     pub fn stub_function(
         &mut self,
+        querier: &Querier,
         import_ident: FunctionIdent<'_>,
         export_ident: FunctionIdent<'_>,
         component_bytes: &[u8],
     ) -> anyhow::Result<()> {
+        // type checking
+        let import = querier
+            .imported_function(import_ident)
+            .with_context(|| format!("no import with name '{import_ident}'"))?;
+        let other = Querier::from_bytes(component_bytes)?;
+        let export = other
+            .exported_function(export_ident)
+            .with_context(|| format!("no export with name '{export_ident}'"))?;
+        if import.params != export.params {
+            anyhow::bail!("params not equal")
+        }
+        if import.results != export.results {
+            anyhow::bail!("return values not equal")
+        }
+
         let component = load_component(&self.engine, component_bytes)?;
         let mut linker = Linker::<ImportImplsContext>::new(&self.engine);
         wasmtime_wasi::preview2::command::sync::add_to_linker(&mut linker)?;
@@ -219,7 +352,7 @@ impl ImportImpls {
     fn new(engine: &Engine) -> Self {
         let mut table = Table::new();
         let mut builder = WasiCtxBuilder::new();
-        builder.inherit_stdout();
+        builder.inherit_stdout().inherit_stderr();
         let wasi = builder.build(&mut table).unwrap();
         let context = ImportImplsContext::new(table, wasi);
         let store = Store::new(engine, context);
@@ -305,5 +438,78 @@ impl WasiView for ImportImplsContext {
 
     fn ctx_mut(&mut self) -> &mut WasiCtx {
         &mut self.wasi
+    }
+}
+
+fn types_equal(
+    querier1: &Querier,
+    t1: &wit_parser::Type,
+    querier2: &Querier,
+    t2: &wit_parser::Type,
+) -> bool {
+    match (t1, t2) {
+        (wit_parser::Type::Id(t1), wit_parser::Type::Id(t2)) => {
+            let t1 = querier1.type_by_id(*t1).unwrap();
+            let t2 = querier2.type_by_id(*t2).unwrap();
+            type_defs_equal(querier1, &t1.kind, querier2, &t2.kind)
+        }
+        (wit_parser::Type::Id(t1), t2) => {
+            let t1 = querier1.type_by_id(*t1).unwrap();
+            if let wit_parser::TypeDefKind::Type(t1) = &t1.kind {
+                types_equal(querier1, t1, querier2, t2)
+            } else {
+                false
+            }
+        }
+        (t1, wit_parser::Type::Id(t2)) => {
+            let t2 = querier1.type_by_id(*t2).unwrap();
+            if let wit_parser::TypeDefKind::Type(t2) = &t2.kind {
+                types_equal(querier1, t1, querier2, t2)
+            } else {
+                false
+            }
+        }
+        (t1, t2) => t1 == t2,
+    }
+}
+
+fn type_defs_equal(
+    querier1: &Querier,
+    t1: &wit_parser::TypeDefKind,
+    querier2: &Querier,
+    t2: &wit_parser::TypeDefKind,
+) -> bool {
+    match (t1, t2) {
+        (wit_parser::TypeDefKind::Result(r1), wit_parser::TypeDefKind::Result(r2)) => {
+            let oks = match (&r1.ok, &r2.ok) {
+                (None, None) => true,
+                (Some(t1), Some(t2)) => types_equal(querier1, t1, querier2, t2),
+                _ => false,
+            };
+            let errs = match (&r1.err, &r2.err) {
+                (None, None) => true,
+                (Some(t1), Some(t2)) => types_equal(querier1, t1, querier2, t2),
+                _ => false,
+            };
+            oks && errs
+        }
+        (wit_parser::TypeDefKind::List(t1), wit_parser::TypeDefKind::List(t2)) => {
+            types_equal(querier1, t1, querier2, t2)
+        }
+        (wit_parser::TypeDefKind::Variant(v1), wit_parser::TypeDefKind::Variant(v2)) => {
+            if v1.cases.len() != v2.cases.len() {
+                return false;
+            }
+            v1.cases.iter().zip(v2.cases.iter()).all(|(c1, c2)| {
+                let types_equal = match (&c1.ty, &c2.ty) {
+                    (Some(t1), Some(t2)) => types_equal(querier1, t1, querier2, t2),
+                    (None, None) => true,
+                    _ => false,
+                };
+                c1.name == c2.name && types_equal
+            })
+        }
+        // TODO: more comparisons
+        _ => false,
     }
 }
