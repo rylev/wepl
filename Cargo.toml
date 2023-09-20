@@ -5,11 +5,14 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0"
+async-trait = "0.1.73"
 clap = { version = "4.4.2", features = ["derive"] }
+bytes = "1.0"
 env_logger = "0.10"
 home = "0.5.5"
 log = "0.4"
 nom = "7.1.3"
+nom_locate = "4.2"
 rustyline = "12.0.0"
 colored = "2"
 tokio = { version = "1.0", features = ["macros"] }
@@ -26,4 +29,3 @@ wasi-virt = { git = "https://github.com/bytecodealliance/WASI-Virt", rev = "c485
 wit-component = { git = "https://github.com/bytecodealliance/wasm-tools", rev = "e2af293273db65712b6f31da85f7aa5eb31abfde" }
 wit-parser = { git = "https://github.com/bytecodealliance/wasm-tools", rev = "e2af293273db65712b6f31da85f7aa5eb31abfde" }
 wasm-compose = "0.4.2"
-nom_locate = "4.2"

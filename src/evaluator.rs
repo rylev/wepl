@@ -50,6 +50,7 @@ impl<'a> Evaluator<'a> {
                             && ident.function == "some"
                             && args.len() == 1 =>
                     {
+                        println!("TYPE: {:?}", o.ty());
                         let val = self.eval(args.remove(0), Some(&o.ty()))?;
                         return o.new_val(Some(val));
                     }
@@ -124,8 +125,30 @@ impl<'a> Evaluator<'a> {
     ) -> anyhow::Result<Val> {
         match literal {
             parser::Literal::List(list) => {
-                let ty = match type_hint {
-                    Some(component::Type::List(l)) => l,
+                match type_hint {
+                    Some(component::Type::List(l)) => {
+                        let mut values = Vec::new();
+                        for item in list.items {
+                            values.push(self.eval(item, Some(&l.ty()))?)
+                        }
+                        Ok(Val::List(List::new(&l, values.into_boxed_slice())?))
+                    }
+                    Some(component::Type::Option(o)) => match o.ty() {
+                        component::Type::List(l) => {
+                            let mut values = Vec::new();
+                            for item in list.items {
+                                values.push(self.eval(item, Some(&l.ty()))?)
+                            }
+                            Ok(Val::Option(component::OptionVal::new(
+                                o,
+                                Some(Val::List(List::new(&l, values.into_boxed_slice())?)),
+                            )?))
+                        }
+                        t => bail!(
+                            "type error - required option<{}> found = list",
+                            display_component_type(&t)
+                        ),
+                    },
                     Some(t) => bail!(
                         "type error - required = {} found = list",
                         display_component_type(t)
@@ -134,12 +157,7 @@ impl<'a> Evaluator<'a> {
                         // TODO: try to find a list type that fits the shape of the literal
                         bail!("cannot determine type of list")
                     }
-                };
-                let mut values = Vec::new();
-                for item in list.items {
-                    values.push(self.eval(item, Some(&component::Type::List(ty.clone())))?)
                 }
-                Ok(Val::List(List::new(ty, values.into_boxed_slice())?))
             }
             parser::Literal::Record(mut r) => {
                 let ty = match type_hint {

@@ -1,14 +1,18 @@
 use std::{
     collections::HashMap,
+    io::Write,
     sync::{Arc, Mutex},
 };
 
 use anyhow::Context as _;
+use colored::Colorize;
 use wasmtime::{
     component::{Component, Func, Instance, Linker, Val},
     Config, Engine, Store,
 };
-use wasmtime_wasi::preview2::{Table, WasiCtx, WasiCtxBuilder, WasiView};
+use wasmtime_wasi::preview2::{
+    HostOutputStream, OutputStreamError, Table, WasiCtx, WasiCtxBuilder, WasiView,
+};
 
 use crate::command::parser::{FunctionIdent, InterfaceIdent, ItemIdent};
 
@@ -71,7 +75,7 @@ impl Runtime {
             .context("could not instantiate component")?;
         let mut store = build_store(&engine);
         let instance = pre.instantiate(&mut store)?;
-        let import_impls = ImportImpls::new(&engine);
+        let import_impls = ImportImpls::new(&engine, String::from("import"));
         Ok(Self {
             engine,
             store,
@@ -163,71 +167,75 @@ impl Runtime {
         let export = other
             .exported_interface(export_ident)
             .with_context(|| format!("no exported interface named '{export_ident}' found"))?;
-        for (fun_name, imported_function) in &import.functions {
-            let exported_function = export
-                .functions
-                .get(fun_name)
-                .with_context(|| format!("no exported function named '{fun_name}' found"))?;
-            if imported_function.params.len() != exported_function.params.len() {
-                anyhow::bail!("different number of parameters")
-            }
-            for ((arg_name, p1), (_, p2)) in imported_function
-                .params
-                .iter()
-                .zip(&exported_function.params)
-            {
-                if !types_equal(querier, p1, &other, p2) {
-                    anyhow::bail!("different types for arg '{arg_name}' in function '{fun_name}'")
+        {
+            let mut store_lock = self.import_impls.store.lock().unwrap();
+            let export_instance = linker.instantiate(&mut *store_lock, &component)?;
+            for (fun_name, imported_function) in &import.functions {
+                let exported_function = export
+                    .functions
+                    .get(fun_name)
+                    .with_context(|| format!("no exported function named '{fun_name}' found"))?;
+                if imported_function.params.len() != exported_function.params.len() {
+                    anyhow::bail!("different number of parameters")
                 }
-            }
-            match (&imported_function.results, &exported_function.results) {
-                (wit_parser::Results::Named(is), wit_parser::Results::Named(es)) => {
-                    if is.len() != es.len() {
-                        anyhow::bail!("different number of return types")
+                for ((arg_name, p1), (_, p2)) in imported_function
+                    .params
+                    .iter()
+                    .zip(&exported_function.params)
+                {
+                    if !types_equal(querier, p1, &other, p2) {
+                        anyhow::bail!(
+                            "different types for arg '{arg_name}' in function '{fun_name}'"
+                        )
                     }
-                    let es = es
-                        .into_iter()
-                        .map(|(name, ty)| (name, ty))
-                        .collect::<HashMap<&String, &wit_parser::Type>>();
-                    for (name, ty) in is {
-                        let e = es.get(name).with_context(|| format!("exported function '{fun_name}' does not have return value '{name}'"))?;
-                        if !types_equal(querier, ty, &other, e) {
-                            anyhow::bail!("return value '{name}' has differing types");
+                }
+                match (&imported_function.results, &exported_function.results) {
+                    (wit_parser::Results::Named(is), wit_parser::Results::Named(es)) => {
+                        if is.len() != es.len() {
+                            anyhow::bail!("different number of return types")
+                        }
+                        let es = es
+                            .into_iter()
+                            .map(|(name, ty)| (name, ty))
+                            .collect::<HashMap<&String, &wit_parser::Type>>();
+                        for (name, ty) in is {
+                            let e = es.get(name).with_context(|| format!("exported function '{fun_name}' does not have return value '{name}'"))?;
+                            if !types_equal(querier, ty, &other, e) {
+                                anyhow::bail!("return value '{name}' has differing types");
+                            }
                         }
                     }
-                }
-                (wit_parser::Results::Anon(t1), wit_parser::Results::Anon(t2)) => {
-                    if !types_equal(querier, t1, &other, t2) {
-                        anyhow::bail!("return types did not match for function {fun_name}");
+                    (wit_parser::Results::Anon(t1), wit_parser::Results::Anon(t2)) => {
+                        if !types_equal(querier, t1, &other, t2) {
+                            anyhow::bail!("return types did not match for function {fun_name}");
+                        }
                     }
+                    _ => anyhow::bail!("different return type kinds for function '{fun_name}'"),
                 }
-                _ => anyhow::bail!("different return type kinds for function '{fun_name}'"),
-            }
-            let store = self.import_impls.store.clone();
+                let store = self.import_impls.store.clone();
 
-            let export_func = {
-                let mut store_lock = self.import_impls.store.lock().unwrap();
-                let export_instance = linker.instantiate(&mut *store_lock, &component)?;
-                let mut exports = export_instance.exports(&mut *store_lock);
-                let mut export_instance = exports
-                    .instance(&export_ident.to_string())
-                    .with_context(|| {
-                        format!("no exported instance named '{export_ident} found'")
-                    })?;
-                export_instance
-                    .func(&fun_name)
-                    .with_context(|| format!("no exported function named '{fun_name}' found"))?
-            };
-            import_instance.func_new(
-                &self.component.0,
-                &fun_name,
-                move |_ctx, args, results| {
-                    let mut store = store.lock().unwrap();
-                    export_func.call(&mut *store, args, results)?;
-                    export_func.post_return(&mut *store)?;
-                    Ok(())
-                },
-            )?;
+                let export_func = {
+                    let mut exports = export_instance.exports(&mut *store_lock);
+                    let mut export_instance = exports
+                        .instance(&export_ident.to_string())
+                        .with_context(|| {
+                            format!("no exported instance named '{export_ident} found'")
+                        })?;
+                    export_instance
+                        .func(&fun_name)
+                        .with_context(|| format!("no exported function named '{fun_name}' found"))?
+                };
+                import_instance.func_new(
+                    &self.component.0,
+                    &fun_name,
+                    move |_ctx, args, results| {
+                        let mut store = store.lock().unwrap();
+                        export_func.call(&mut *store, args, results)?;
+                        export_func.post_return(&mut *store)?;
+                        Ok(())
+                    },
+                )?;
+            }
         }
         self.refresh()?;
         Ok(())
@@ -349,10 +357,14 @@ struct ImportImpls {
 }
 
 impl ImportImpls {
-    fn new(engine: &Engine) -> Self {
+    fn new(engine: &Engine, prefix: String) -> Self {
         let mut table = Table::new();
         let mut builder = WasiCtxBuilder::new();
-        builder.inherit_stdout().inherit_stderr();
+        builder.inherit_stderr();
+        builder.stdout(
+            ImportImplStdout::new(prefix),
+            wasmtime_wasi::preview2::IsATTY::Yes,
+        );
         let wasi = builder.build(&mut table).unwrap();
         let context = ImportImplsContext::new(table, wasi);
         let store = Store::new(engine, context);
@@ -360,6 +372,39 @@ impl ImportImpls {
         Self {
             store: Arc::new(Mutex::new(store)),
         }
+    }
+}
+
+struct ImportImplStdout {
+    prefix: String,
+}
+
+impl ImportImplStdout {
+    fn new(prefix: String) -> Self {
+        let prefix = format!("<{}>", prefix).green().bold();
+        Self {
+            prefix: prefix.to_string(),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl HostOutputStream for ImportImplStdout {
+    fn write(&mut self, bytes: bytes::Bytes) -> Result<(), OutputStreamError> {
+        let output = String::from_utf8_lossy(&*bytes);
+        let output = format!("{} {output}", self.prefix);
+        std::io::stdout()
+            .write_all(output.as_bytes())
+            .map_err(|e| OutputStreamError::LastOperationFailed(anyhow::anyhow!(e)))?;
+        Ok(())
+    }
+
+    fn flush(&mut self) -> Result<(), OutputStreamError> {
+        Ok(())
+    }
+
+    async fn write_ready(&mut self) -> Result<usize, OutputStreamError> {
+        Ok(usize::MAX)
     }
 }
 
