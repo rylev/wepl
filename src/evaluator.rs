@@ -50,7 +50,6 @@ impl<'a> Evaluator<'a> {
                             && ident.function == "some"
                             && args.len() == 1 =>
                     {
-                        println!("TYPE: {:?}", o.ty());
                         let val = self.eval(args.remove(0), Some(&o.ty()))?;
                         return o.new_val(Some(val));
                     }

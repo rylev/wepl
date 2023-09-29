@@ -159,15 +159,45 @@ impl<'a> Cmd<'a> {
                     bail!("wrong number of arguments. Expected 3 got {}", args.len())
                 };
                 let Ok((_, import_ident)) = ItemIdent::parse((&*import_ident).into()) else {
-                    bail!("'{import_ident}' is not a proper function identifier");
+                    bail!("'{import_ident}' is not a proper item identifier");
                 };
                 let Ok((_, export_ident)) = ItemIdent::parse((&*export_ident).into()) else {
-                    bail!("'{export_ident}' is not a proper function identifier");
+                    bail!("'{export_ident}' is not a proper item identifier");
                 };
 
                 let component_bytes = std::fs::read(component.as_str())
                     .with_context(|| format!("could not read component '{component}'"))?;
                 runtime.stub(&querier, import_ident, export_ident, &component_bytes)?;
+            }
+            Cmd::BuiltIn { name, args } if name == "inspect" => {
+                let &[ident] = args.as_slice() else {
+                    bail!("wrong number of arguments. Expected 1 got {}", args.len())
+                };
+                let Ok((_, ident)) = ItemIdent::parse((&*ident).into()) else {
+                    bail!("'{ident}' is not a proper item identifier");
+                };
+                match ident {
+                    ItemIdent::Function(ident) => {
+                        let f = querier
+                            .exported_function(ident)
+                            .or_else(|| querier.imported_function(ident));
+                        match f {
+                            Some(f) => println!("{}", format_function(f, querier)),
+                            None => bail!("Could not find imported or exported function '{ident}'"),
+                        }
+                    }
+                    ItemIdent::Interface(ident) => {
+                        let i = querier
+                            .exported_interface(ident)
+                            .or_else(|| querier.imported_interface(ident));
+                        match i {
+                            Some(f) => println!("{}", format_interface(f, querier)),
+                            None => {
+                                bail!("Could not find imported or exported interface '{ident}'")
+                            }
+                        }
+                    }
+                }
             }
             Cmd::BuiltIn { name, args: _ } if name == "help" => print_help(),
             Cmd::BuiltIn { name, args: _ } if name == "clear" => return Ok(true),
@@ -200,26 +230,31 @@ fn format_world_item(item: &wit_parser::WorldItem, querier: &Querier) -> Option<
     match item {
         wit_parser::WorldItem::Function(f) => Some(format_function(f, querier)),
         wit_parser::WorldItem::Interface(id) => {
-            use std::fmt::Write;
             let interface = querier.interface_by_id(*id).unwrap();
             if interface.functions.is_empty() {
                 return None;
             }
-            let mut output = String::from("{\n");
-            for (_, fun) in &interface.functions {
-                writeln!(
-                    &mut output,
-                    "    {}: {}",
-                    fun.name.bold(),
-                    format_function(fun, querier)
-                )
-                .unwrap();
-            }
-            output.push('}');
+            let output = format_interface(interface, querier);
             Some(output)
         }
         wit_parser::WorldItem::Type(_) => None,
     }
+}
+
+fn format_interface(interface: &wit_parser::Interface, querier: &Querier) -> String {
+    use std::fmt::Write;
+    let mut output = String::from("{\n");
+    for (_, fun) in &interface.functions {
+        writeln!(
+            &mut output,
+            "    {}: {}",
+            fun.name.bold(),
+            format_function(fun, querier)
+        )
+        .unwrap();
+    }
+    output.push('}');
+    output
 }
 
 fn format_function(f: &wit_parser::Function, querier: &Querier) -> String {

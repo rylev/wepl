@@ -52,11 +52,12 @@ pub fn builtin_call(input: Span) -> nom::IResult<Span, (Span, Vec<Span>)> {
 
 pub fn special_char(input: Span) -> nom::IResult<Span, (Span, Vec<Span>)> {
     let (rest, _) = tag("?")(input)?;
+    let (rest, _) = multispace0(rest)?;
     let (rest, args) = separated_list0(multispace1, builtin_argument)(rest)?;
-    if rest.is_empty() {
+    if args.is_empty() {
         return Ok((rest, (Span::new("help"), Vec::new())));
     }
-    Ok((rest, (Span::new("help"), args)))
+    Ok((rest, (Span::new("inspect"), args)))
 }
 
 #[derive(Debug, PartialEq)]
@@ -87,8 +88,8 @@ pub enum ItemIdent<'a> {
 impl<'a> ItemIdent<'a> {
     pub fn parse(input: Span<'a>) -> nom::IResult<Span<'a>, ItemIdent<'a>> {
         alt((
-            map(InterfaceIdent::parse, |i| ItemIdent::Interface(i)),
             map(FunctionIdent::parse, |f| ItemIdent::Function(f)),
+            map(InterfaceIdent::parse, |i| ItemIdent::Interface(i)),
         ))(input)
     }
 }
