@@ -1,6 +1,5 @@
 use std::{
     collections::HashMap,
-    io::Write,
     sync::{Arc, Mutex},
 };
 
@@ -11,7 +10,8 @@ use wasmtime::{
     Config, Engine, Store,
 };
 use wasmtime_wasi::preview2::{
-    HostOutputStream, OutputStreamError, Table, WasiCtx, WasiCtxBuilder, WasiView,
+    HostOutputStream, Stdout, StdoutStream, StreamResult, Subscribe, Table, WasiCtx,
+    WasiCtxBuilder, WasiView,
 };
 
 use crate::command::parser::{FunctionIdent, InterfaceIdent, ItemIdent};
@@ -358,14 +358,11 @@ struct ImportImpls {
 
 impl ImportImpls {
     fn new(engine: &Engine, prefix: String) -> Self {
-        let mut table = Table::new();
+        let table = Table::new();
         let mut builder = WasiCtxBuilder::new();
         builder.inherit_stderr();
-        builder.stdout(
-            ImportImplStdout::new(prefix),
-            wasmtime_wasi::preview2::IsATTY::Yes,
-        );
-        let wasi = builder.build(&mut table).unwrap();
+        builder.stdout(ImportImplStdout::new(prefix));
+        let wasi = builder.build();
         let context = ImportImplsContext::new(table, wasi);
         let store = Store::new(engine, context);
 
@@ -376,13 +373,16 @@ impl ImportImpls {
 }
 
 struct ImportImplStdout {
+    stream: Box<dyn HostOutputStream>,
     prefix: String,
 }
 
 impl ImportImplStdout {
     fn new(prefix: String) -> Self {
         let prefix = format!("<{}>", prefix).green().bold();
+        let stream = Stdout.stream();
         Self {
+            stream,
             prefix: prefix.to_string(),
         }
     }
@@ -390,29 +390,48 @@ impl ImportImplStdout {
 
 #[async_trait::async_trait]
 impl HostOutputStream for ImportImplStdout {
-    fn write(&mut self, bytes: bytes::Bytes) -> Result<(), OutputStreamError> {
+    fn write(&mut self, bytes: bytes::Bytes) -> StreamResult<()> {
         let output = String::from_utf8_lossy(&*bytes);
         let output = format!("{} {output}", self.prefix);
-        std::io::stdout()
-            .write_all(output.as_bytes())
-            .map_err(|e| OutputStreamError::LastOperationFailed(anyhow::anyhow!(e)))?;
-        Ok(())
+        self.stream.write(output.into_bytes().into())
     }
 
-    fn flush(&mut self) -> Result<(), OutputStreamError> {
-        Ok(())
+    fn flush(&mut self) -> StreamResult<()> {
+        self.stream.flush()
     }
 
-    async fn write_ready(&mut self) -> Result<usize, OutputStreamError> {
-        Ok(usize::MAX)
+    fn check_write(&mut self) -> StreamResult<usize> {
+        self.stream.check_write()
+    }
+
+    async fn write_ready(&mut self) -> StreamResult<usize> {
+        self.stream.write_ready().await
+    }
+}
+
+#[async_trait::async_trait]
+impl Subscribe for ImportImplStdout {
+    async fn ready(&mut self) {
+        self.stream.ready().await
+    }
+}
+
+#[async_trait::async_trait]
+impl StdoutStream for ImportImplStdout {
+    fn stream(&self) -> Box<(dyn wasmtime_wasi::preview2::HostOutputStream + 'static)> {
+        todo!()
+    }
+
+    fn isatty(&self) -> bool {
+        Stdout.isatty()
     }
 }
 
 fn build_store(engine: &Engine) -> Store<Context> {
-    let mut table = Table::new();
+    let table = Table::new();
     let mut builder = WasiCtxBuilder::new();
     builder.inherit_stdout().inherit_stderr();
-    let wasi = builder.build(&mut table).unwrap();
+    let wasi = builder.build();
     let context = Context::new(table, wasi);
     Store::new(engine, context)
 }
