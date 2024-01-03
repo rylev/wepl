@@ -419,7 +419,7 @@ impl Subscribe for ImportImplStdout {
 #[async_trait::async_trait]
 impl StdoutStream for ImportImplStdout {
     fn stream(&self) -> Box<(dyn wasmtime_wasi::preview2::HostOutputStream + 'static)> {
-        todo!()
+        Stdout.stream()
     }
 
     fn isatty(&self) -> bool {
