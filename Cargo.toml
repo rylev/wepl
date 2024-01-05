@@ -17,7 +17,7 @@ home = "0.5.5"
 log = "0.4"
 nom = "7.1.3"
 nom_locate = "4.2"
-rustyline = "12.0.0"
+rustyline = "13.0.0"
 colored = "2"
 tokio = { version = "1.0", features = ["macros"] }
 
@@ -27,7 +27,7 @@ wasmtime = { version = "16.0", features = [
 wasmtime-wasi = { version = "16.0", features = [
     "tokio",
 ] }
-wasi-virt = { git = "https://github.com/bytecodealliance/WASI-Virt", rev = "c485962a7cb44637005fb6cfc3cf1515d81fe418" }
-wit-component = { git = "https://github.com/bytecodealliance/wasm-tools", rev = "e2af293273db65712b6f31da85f7aa5eb31abfde" }
-wit-parser = { git = "https://github.com/bytecodealliance/wasm-tools", rev = "e2af293273db65712b6f31da85f7aa5eb31abfde" }
+wasi-virt = { git = "https://github.com/bytecodealliance/WASI-Virt", rev = "6801514735cb78b385221e225c554bc043038c2f" }
+wit-component = { git = "https://github.com/bytecodealliance/wasm-tools", rev = "3c4f2f38211b42b8e5fcf1732c7f5f147e59854d" }
+wit-parser = { git = "https://github.com/bytecodealliance/wasm-tools", rev = "3c4f2f38211b42b8e5fcf1732c7f5f147e59854d" }
 wasm-compose = "0.4.2"
