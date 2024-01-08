@@ -270,7 +270,17 @@ fn format_function(f: &wit_parser::Function, querier: &Querier) -> String {
             format!(" -> {}", t.italic())
         }
         wit_parser::Results::Named(n) if n.is_empty() => String::new(),
-        wit_parser::Results::Named(_) => todo!(),
+        wit_parser::Results::Named(params) => {
+            let params = params
+                .iter()
+                .map(|(name, t)| {
+                    let t = querier.display_wit_type(t, Expansion::Collapsed);
+                    format!("{name}: {t}")
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(" -> {params}")
+        }
     };
     format!("func({params}){rets}")
 }

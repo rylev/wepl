@@ -247,11 +247,12 @@ impl Querier {
                 }
                 Expansion::Collapsed => typ.name.clone().unwrap(),
             },
-            wit_parser::TypeDefKind::Resource => todo!(),
-            wit_parser::TypeDefKind::Handle(_) => todo!(),
-            wit_parser::TypeDefKind::Flags(_) => todo!(),
-            wit_parser::TypeDefKind::Future(_) => todo!(),
-            wit_parser::TypeDefKind::Stream(_) => todo!(),
+            // TODO: Fill these in with more information.
+            wit_parser::TypeDefKind::Resource => format!("resource<...>"),
+            wit_parser::TypeDefKind::Handle(_) => format!("handle<...>"),
+            wit_parser::TypeDefKind::Flags(_) => format!("flags<...>"),
+            wit_parser::TypeDefKind::Future(_) => format!("future<...>"),
+            wit_parser::TypeDefKind::Stream(_) => format!("stream<...>"),
             wit_parser::TypeDefKind::Unknown => unreachable!(),
         };
         Cow::Owned(display)
