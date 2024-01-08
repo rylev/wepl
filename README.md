@@ -39,4 +39,4 @@ Supported functions include:
 
 ## Compatibility
 
-`wepl` is currently tied to the wasmtime 13 release. Components that work with that release should work in `wepl`.
+`wepl` is currently tied to the wasmtime 16 release. Components that work with that release should work in `wepl`.
