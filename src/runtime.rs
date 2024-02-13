@@ -6,12 +6,12 @@ use std::{
 use anyhow::Context as _;
 use colored::Colorize;
 use wasmtime::{
-    component::{Component, Func, Instance, Linker, Val},
+    component::{Component, Func, Instance, Linker, ResourceTable, Val},
     Config, Engine, Store,
 };
 use wasmtime_wasi::preview2::{
-    HostOutputStream, Stdout, StdoutStream, StreamResult, Subscribe, Table, WasiCtx,
-    WasiCtxBuilder, WasiView,
+    HostOutputStream, Stdout, StdoutStream, StreamResult, Subscribe, WasiCtx, WasiCtxBuilder,
+    WasiView,
 };
 
 use crate::command::parser::{FunctionIdent, InterfaceIdent, ItemIdent};
@@ -358,7 +358,7 @@ struct ImportImpls {
 
 impl ImportImpls {
     fn new(engine: &Engine, prefix: String) -> Self {
-        let table = Table::new();
+        let table = ResourceTable::new();
         let mut builder = WasiCtxBuilder::new();
         builder.inherit_stderr();
         builder.stdout(ImportImplStdout::new(prefix));
@@ -428,7 +428,7 @@ impl StdoutStream for ImportImplStdout {
 }
 
 fn build_store(engine: &Engine) -> Store<Context> {
-    let table = Table::new();
+    let table = ResourceTable::new();
     let mut builder = WasiCtxBuilder::new();
     builder.inherit_stdout().inherit_stderr();
     let wasi = builder.build();
@@ -437,22 +437,22 @@ fn build_store(engine: &Engine) -> Store<Context> {
 }
 
 pub struct Context {
-    table: Table,
+    table: ResourceTable,
     wasi: WasiCtx,
 }
 
 impl Context {
-    fn new(table: Table, wasi: WasiCtx) -> Self {
+    fn new(table: ResourceTable, wasi: WasiCtx) -> Self {
         Self { table, wasi }
     }
 }
 
 impl WasiView for Context {
-    fn table(&self) -> &Table {
+    fn table(&self) -> &ResourceTable {
         &self.table
     }
 
-    fn table_mut(&mut self) -> &mut Table {
+    fn table_mut(&mut self) -> &mut ResourceTable {
         &mut self.table
     }
 
@@ -477,22 +477,22 @@ fn load_component(engine: &Engine, component_bytes: &[u8]) -> anyhow::Result<Com
 }
 
 struct ImportImplsContext {
-    table: Table,
+    table: ResourceTable,
     wasi: WasiCtx,
 }
 
 impl ImportImplsContext {
-    fn new(table: Table, wasi: WasiCtx) -> Self {
+    fn new(table: ResourceTable, wasi: WasiCtx) -> Self {
         Self { table, wasi }
     }
 }
 
 impl WasiView for ImportImplsContext {
-    fn table(&self) -> &Table {
+    fn table(&self) -> &ResourceTable {
         &self.table
     }
 
-    fn table_mut(&mut self) -> &mut Table {
+    fn table_mut(&mut self) -> &mut ResourceTable {
         &mut self.table
     }
 

@@ -9,25 +9,21 @@ repository = "https://github.com/rylev/wepl"
 
 [dependencies]
 anyhow = "1.0"
-async-trait = "0.1.73"
-clap = { version = "4.4.2", features = ["derive"] }
-bytes = "1.0"
-env_logger = "0.10"
-home = "0.5.5"
+async-trait = "0.1.77"
+clap = { version = "4.5.0", features = ["derive"] }
+bytes = "1.5.0"
+env_logger = "0.11"
+home = "0.5.9"
 log = "0.4"
 nom = "7.1.3"
 nom_locate = "4.2"
 rustyline = "13.0.0"
 colored = "2"
-tokio = { version = "1.0", features = ["macros"] }
+tokio = { version = "1.36.0", features = ["macros"] }
 
-wasmtime = { version = "16.0", features = [
-    "component-model",
-] }
-wasmtime-wasi = { version = "16.0", features = [
-    "tokio",
-] }
-wasi-virt = { git = "https://github.com/bytecodealliance/WASI-Virt", rev = "6801514735cb78b385221e225c554bc043038c2f" }
-wit-component = { git = "https://github.com/bytecodealliance/wasm-tools", rev = "3c4f2f38211b42b8e5fcf1732c7f5f147e59854d" }
-wit-parser = { git = "https://github.com/bytecodealliance/wasm-tools", rev = "3c4f2f38211b42b8e5fcf1732c7f5f147e59854d" }
-wasm-compose = "0.4.2"
+wasmtime = { version = "17.0.1", features = [ "component-model", ] }
+wasmtime-wasi = { version = "17.0.1", features = [ "tokio", ] }
+wasi-virt = { git = "https://github.com/bytecodealliance/WASI-Virt", rev = "fd2fae04342ea58aab2426ca041da68be046b030" }
+wit-component = "0.21.0"
+wit-parser = "0.14.0"
+wasm-compose = "0.5.5"
