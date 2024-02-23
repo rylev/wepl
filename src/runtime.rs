@@ -418,7 +418,7 @@ impl Subscribe for ImportImplStdout {
 
 #[async_trait::async_trait]
 impl StdoutStream for ImportImplStdout {
-    fn stream(&self) -> Box<(dyn wasmtime_wasi::preview2::HostOutputStream + 'static)> {
+    fn stream(&self) -> Box<(dyn HostOutputStream + 'static)> {
         Stdout.stream()
     }
 
@@ -448,19 +448,11 @@ impl Context {
 }
 
 impl WasiView for Context {
-    fn table(&self) -> &ResourceTable {
-        &self.table
-    }
-
-    fn table_mut(&mut self) -> &mut ResourceTable {
+    fn table(&mut self) -> &mut ResourceTable {
         &mut self.table
     }
 
-    fn ctx(&self) -> &WasiCtx {
-        &self.wasi
-    }
-
-    fn ctx_mut(&mut self) -> &mut WasiCtx {
+    fn ctx(&mut self) -> &mut WasiCtx {
         &mut self.wasi
     }
 }
@@ -488,19 +480,11 @@ impl ImportImplsContext {
 }
 
 impl WasiView for ImportImplsContext {
-    fn table(&self) -> &ResourceTable {
-        &self.table
-    }
-
-    fn table_mut(&mut self) -> &mut ResourceTable {
+    fn table(&mut self) -> &mut ResourceTable {
         &mut self.table
     }
 
-    fn ctx(&self) -> &WasiCtx {
-        &self.wasi
-    }
-
-    fn ctx_mut(&mut self) -> &mut WasiCtx {
+    fn ctx(&mut self) -> &mut WasiCtx {
         &mut self.wasi
     }
 }
