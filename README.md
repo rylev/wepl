@@ -2,6 +2,14 @@
 
 The WebAssembly Component repl.
 
+## Building from Source
+
+You can build `wepl` from source by running `cargo build --release` (or `cargo build` to build in debug mode).
+
+## Installing `wepl`
+
+You can install `wepl` on your local system by running `cargo install --path . --locked`
+
 ## Example
 
 ```bash
