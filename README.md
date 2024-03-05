@@ -2,6 +2,14 @@
 
 The WebAssembly Component repl.
 
+## Building from Source
+
+You can build `wepl` from source by running `make build`
+
+## Installing `wepl`
+
+You can install `wepl` on your local system by running `make install`
+
 ## Example
 
 ```bash
