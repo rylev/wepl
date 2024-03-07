@@ -240,7 +240,8 @@ impl<'a> Evaluator<'a> {
                 | component::Type::S8
                 | component::Type::S16
                 | component::Type::S32
-                | component::Type::S64 => self.lookup_in_scope(ident),
+                | component::Type::S64
+                | component::Type::String => self.lookup_in_scope(ident),
                 t => todo!("handle ident '{ident}' with type {t:?}"),
             },
             None => self.lookup_in_scope(ident),
