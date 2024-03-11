@@ -38,11 +38,12 @@ impl Runtime {
         let mut linker = Linker::<Context>::new(&engine);
         linker.allow_shadowing(true);
 
-        if querier.imports_wasi() {
+        let imports_wasi_cli = querier.imports_wasi_cli();
+        if imports_wasi_cli {
             log::debug!("Linking with wasi");
             wasmtime_wasi::preview2::command::sync::add_to_linker(&mut linker)?;
         }
-        for (import_name, import) in querier.imports(false) {
+        for (import_name, import) in querier.imports(!imports_wasi_cli) {
             let import_name = querier.world_item_name(import_name);
             let stub_import = stub_import.clone();
             match import {
@@ -65,6 +66,16 @@ impl Runtime {
                             stub_import(&import_name);
                             Ok(())
                         })?;
+                    }
+                    for (name, t) in &interface.types {
+                        let t = querier.type_by_id(*t).unwrap();
+                        match &t.kind {
+                            wit_parser::TypeDefKind::Resource => {
+                                let ty = wasmtime::component::ResourceType::host::<()>();
+                                instance.resource(name, ty, |_, _| Ok(())).unwrap();
+                            }
+                            _ => {}
+                        }
                     }
                 }
                 _ => {}
