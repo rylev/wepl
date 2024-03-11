@@ -258,14 +258,26 @@ impl Querier {
         Cow::Owned(display)
     }
 
-    pub fn imports_wasi(&self) -> bool {
+    /// Whether the wasi cli (0.2.0) package is imported.
+    ///
+    /// Note that this is being used as a heuristic to determine whether to
+    /// link wasi command.
+    pub fn imports_wasi_cli(&self) -> bool {
         let world = self.world();
         for (import_name, _) in &world.imports {
             if let WorldKey::Interface(interface_id) = import_name {
                 let interface = self.resolve.interfaces.get(*interface_id).unwrap();
                 if let Some(package_id) = &interface.package {
                     if let Some(package) = self.resolve.packages.get(*package_id) {
-                        if package.name.namespace == "wasi" {
+                        if package.name.namespace == "wasi"
+                            && package.name.name == "cli"
+                            && package
+                                .name
+                                .version
+                                .as_ref()
+                                .map(|v| v.major == 0 && v.minor == 2 && v.patch == 0)
+                                .unwrap_or(false)
+                        {
                             return true;
                         }
                     }
@@ -303,19 +315,24 @@ impl Querier {
 
     pub(crate) fn imports(
         &self,
-        include_wasi: bool,
+        include_wasi_cli: bool,
     ) -> impl Iterator<Item = (&WorldKey, &WorldItem)> {
         self.world()
             .imports
             .iter()
             .filter(move |(_, item)| match item {
-                WorldItem::Interface(id) if !include_wasi => {
+                WorldItem::Interface(id) if !include_wasi_cli => {
                     let interface = self.interface_by_id(*id).unwrap();
                     let Some(package) = interface.package else {
                         return true;
                     };
                     let package = self.resolve.packages.get(package).unwrap();
-                    package.name.namespace != "wasi"
+                    !(package.name.namespace == "wasi"
+                        // This is not 100% correct.
+                        // We're assuming that all interfaces in these packages are handled by `wasmtime-wasi` 
+                        // command implementation. This should be true for many components so we'll leave
+                        // the hack for now.
+                        && ["cli", "io", "filesystem", "random"].contains(&package.name.name.as_str()))
                 }
                 _ => true,
             })
