@@ -6,12 +6,12 @@ use wasmtime::component::{self, List, Record, Val};
 use crate::{
     command::parser::{self, FunctionIdent},
     runtime::Runtime,
-    wit::Querier,
+    wit::WorldResolver,
 };
 
 pub struct Evaluator<'a> {
     runtime: &'a mut Runtime,
-    querier: &'a Querier,
+    querier: &'a WorldResolver,
     scope: &'a HashMap<String, Val>,
 }
 
@@ -19,7 +19,7 @@ impl<'a> Evaluator<'a> {
     /// Create a new evaluator
     pub fn new(
         runtime: &'a mut Runtime,
-        querier: &'a Querier,
+        querier: &'a WorldResolver,
         scope: &'a HashMap<String, Val>,
     ) -> Self {
         Self {

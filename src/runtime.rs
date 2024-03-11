@@ -16,7 +16,7 @@ use wasmtime_wasi::preview2::{
 
 use crate::command::parser::{FunctionIdent, InterfaceIdent, ItemIdent};
 
-use super::wit::Querier;
+use super::wit::WorldResolver;
 
 pub struct Runtime {
     engine: Engine,
@@ -30,7 +30,7 @@ pub struct Runtime {
 impl Runtime {
     pub fn init(
         component_bytes: Vec<u8>,
-        querier: &Querier,
+        querier: &WorldResolver,
         stub_import: impl Fn(&str) + Sync + Send + Clone + 'static,
     ) -> anyhow::Result<Self> {
         let engine = load_engine()?;
@@ -136,7 +136,7 @@ impl Runtime {
     /// export needed.
     pub fn stub(
         &mut self,
-        querier: &Querier,
+        querier: &WorldResolver,
         import_ident: ItemIdent<'_>,
         export_ident: ItemIdent<'_>,
         component_bytes: &[u8],
@@ -159,7 +159,7 @@ impl Runtime {
 
     pub fn stub_interface(
         &mut self,
-        querier: &Querier,
+        querier: &WorldResolver,
         import_ident: InterfaceIdent<'_>,
         export_ident: InterfaceIdent<'_>,
         component_bytes: &[u8],
@@ -174,7 +174,7 @@ impl Runtime {
         let import = querier
             .imported_interface(import_ident)
             .with_context(|| format!("no imported interface named '{import_ident}' found"))?;
-        let other = Querier::from_bytes(component_bytes)?;
+        let other = WorldResolver::from_bytes(component_bytes)?;
         let export = other
             .exported_interface(export_ident)
             .with_context(|| format!("no exported interface named '{export_ident}' found"))?;
@@ -254,7 +254,7 @@ impl Runtime {
 
     pub fn stub_function(
         &mut self,
-        querier: &Querier,
+        querier: &WorldResolver,
         import_ident: FunctionIdent<'_>,
         export_ident: FunctionIdent<'_>,
         component_bytes: &[u8],
@@ -263,7 +263,7 @@ impl Runtime {
         let import = querier
             .imported_function(import_ident)
             .with_context(|| format!("no import with name '{import_ident}'"))?;
-        let other = Querier::from_bytes(component_bytes)?;
+        let other = WorldResolver::from_bytes(component_bytes)?;
         let export = other
             .exported_function(export_ident)
             .with_context(|| format!("no export with name '{export_ident}'"))?;
@@ -501,9 +501,9 @@ impl WasiView for ImportImplsContext {
 }
 
 fn types_equal(
-    querier1: &Querier,
+    querier1: &WorldResolver,
     t1: &wit_parser::Type,
-    querier2: &Querier,
+    querier2: &WorldResolver,
     t2: &wit_parser::Type,
 ) -> bool {
     match (t1, t2) {
@@ -533,9 +533,9 @@ fn types_equal(
 }
 
 fn type_defs_equal(
-    querier1: &Querier,
+    querier1: &WorldResolver,
     t1: &wit_parser::TypeDefKind,
-    querier2: &Querier,
+    querier2: &WorldResolver,
     t2: &wit_parser::TypeDefKind,
 ) -> bool {
     match (t1, t2) {

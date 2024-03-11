@@ -6,7 +6,7 @@ use colored::Colorize;
 use wasmtime::component::Val;
 
 use super::runtime::Runtime;
-use super::wit::Querier;
+use super::wit::WorldResolver;
 use crate::command::parser::ItemIdent;
 use crate::evaluator::Evaluator;
 use crate::wit::Expansion;
@@ -50,7 +50,7 @@ impl<'a> Cmd<'a> {
     pub fn run(
         self,
         runtime: &mut Runtime,
-        querier: &mut Querier,
+        querier: &mut WorldResolver,
         scope: &mut HashMap<String, Val>,
     ) -> anyhow::Result<bool> {
         let mut eval = Evaluator::new(runtime, querier, scope);
@@ -152,7 +152,7 @@ impl<'a> Cmd<'a> {
                 let adapter =
                     std::fs::read(&*path).context("could not read path to adapter module")?;
                 runtime.compose(&adapter)?;
-                *querier = Querier::from_bytes(runtime.component_bytes())?;
+                *querier = WorldResolver::from_bytes(runtime.component_bytes())?;
             }
             Cmd::BuiltIn { name, args } if name == "link" => {
                 let &[import_ident, export_ident, component] = args.as_slice() else {
@@ -226,7 +226,7 @@ There are also builtin functions that can be called with a preceding '.'. Suppor
   .inspect $item            inspect an item `$item` in scope (`?` is alias for this built-in)")
 }
 
-fn format_world_item(item: &wit_parser::WorldItem, querier: &Querier) -> Option<String> {
+fn format_world_item(item: &wit_parser::WorldItem, querier: &WorldResolver) -> Option<String> {
     match item {
         wit_parser::WorldItem::Function(f) => Some(format_function(f, querier)),
         wit_parser::WorldItem::Interface(id) => {
@@ -241,7 +241,7 @@ fn format_world_item(item: &wit_parser::WorldItem, querier: &Querier) -> Option<
     }
 }
 
-fn format_interface(interface: &wit_parser::Interface, querier: &Querier) -> String {
+fn format_interface(interface: &wit_parser::Interface, querier: &WorldResolver) -> String {
     use std::fmt::Write;
     let mut output = String::from("{\n");
     for (_, fun) in &interface.functions {
@@ -257,7 +257,7 @@ fn format_interface(interface: &wit_parser::Interface, querier: &Querier) -> Str
     output
 }
 
-fn format_function(f: &wit_parser::Function, querier: &Querier) -> String {
+fn format_function(f: &wit_parser::Function, querier: &WorldResolver) -> String {
     let mut params = Vec::new();
     for (param_name, param_type) in &f.params {
         let ty = querier.display_wit_type(param_type, Expansion::Collapsed);

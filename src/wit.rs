@@ -3,17 +3,19 @@ use std::borrow::Cow;
 use anyhow::Context;
 use wit_component::DecodedWasm;
 use wit_parser::{
-    Function, Interface, InterfaceId, Resolve, TypeDef, TypeId, World, WorldId, WorldItem, WorldKey,
+    Function, Interface, InterfaceId, Package, Resolve, TypeDef, TypeId, World, WorldId, WorldItem,
+    WorldKey,
 };
 
 use crate::command::parser::{FunctionIdent, InterfaceIdent};
 
-pub struct Querier {
+/// A resolver for a wit world.
+pub struct WorldResolver {
     resolve: Resolve,
     world_id: WorldId,
 }
 
-impl Querier {
+impl WorldResolver {
     /// Create new instance.
     ///
     /// Panics if the `world_id` is not found in the `resolve`.
@@ -24,6 +26,7 @@ impl Querier {
         this
     }
 
+    /// Create a new instance from the given bytes.
     pub fn from_bytes(component_bytes: &[u8]) -> anyhow::Result<Self> {
         let (resolve, world) = match wit_component::decode(component_bytes)
             .context("could not decode given file as a WebAssembly component")?
@@ -34,6 +37,7 @@ impl Querier {
         Ok(Self::new(resolve, world))
     }
 
+    /// Get the exported function by the given `FunctionIdent`.
     pub fn exported_function(&self, ident: FunctionIdent) -> Option<&Function> {
         match ident.interface {
             Some(i) => {
@@ -50,6 +54,7 @@ impl Querier {
         }
     }
 
+    /// Get the imported function by the given `FunctionIdent`.
     pub fn imported_function(&self, ident: FunctionIdent) -> Option<&Function> {
         match ident.interface {
             Some(i) => {
@@ -66,27 +71,14 @@ impl Querier {
         }
     }
 
+    /// Get the exported interface by the given `InterfaceIdent`.
     pub fn exported_interface(&self, ident: InterfaceIdent) -> Option<&Interface> {
         self.interface_in_items(ident, self.world().exports.iter())
     }
 
+    /// Get the imported interface by the given `InterfaceIdent`.
     pub fn imported_interface(&self, ident: InterfaceIdent) -> Option<&Interface> {
         self.interface_in_items(ident, self.world().imports.iter())
-    }
-
-    pub fn interface_in_items<'a>(
-        &self,
-        ident: InterfaceIdent,
-        mut items: impl Iterator<Item = (&'a WorldKey, &'a WorldItem)>,
-    ) -> Option<&Interface> {
-        items.find_map(|(export_name, export)| {
-            if self.resolve.name_world_key(&export_name) == ident.to_string() {
-                if let WorldItem::Interface(i) = export {
-                    return Some(self.resolve.interfaces.get(*i).unwrap());
-                }
-            }
-            None
-        })
     }
 
     pub fn export(&self, name: &str) -> Option<&WorldItem> {
@@ -263,28 +255,37 @@ impl Querier {
     /// Note that this is being used as a heuristic to determine whether to
     /// link wasi command.
     pub fn imports_wasi_cli(&self) -> bool {
-        let world = self.world();
-        for (import_name, _) in &world.imports {
-            if let WorldKey::Interface(interface_id) = import_name {
-                let interface = self.resolve.interfaces.get(*interface_id).unwrap();
-                if let Some(package_id) = &interface.package {
-                    if let Some(package) = self.resolve.packages.get(*package_id) {
-                        if package.name.namespace == "wasi"
-                            && package.name.name == "cli"
-                            && package
-                                .name
-                                .version
-                                .as_ref()
-                                .map(|v| v.major == 0 && v.minor == 2 && v.patch == 0)
-                                .unwrap_or(false)
-                        {
-                            return true;
-                        }
-                    }
-                }
+        for package in self.package_dependencies() {
+            if package.name.namespace == "wasi"
+                && package.name.name == "cli"
+                && package
+                    .name
+                    .version
+                    .as_ref()
+                    .map(|v| v.major == 0 && v.minor == 2 && v.patch == 0)
+                    .unwrap_or(false)
+            {
+                return true;
             }
         }
         false
+    }
+
+    /// All packages that are imported dependencies of the current world.
+    pub fn package_dependencies(&self) -> impl Iterator<Item = &Package> {
+        self.world()
+            .imports
+            .iter()
+            .filter_map(move |(import_name, _)| {
+                if let WorldKey::Interface(interface_id) = import_name {
+                    let interface = self.resolve.interfaces.get(*interface_id).unwrap();
+                    interface
+                        .package
+                        .and_then(|package_id| self.resolve.packages.get(package_id))
+                } else {
+                    None
+                }
+            })
     }
 
     pub fn world_item_name(&self, name: &WorldKey) -> String {
@@ -300,17 +301,6 @@ impl Querier {
             .worlds
             .get(self.world_id)
             .expect("world_id is not found in the resolved wit package")
-    }
-
-    fn get_world_item_by_name<'a>(
-        &self,
-        mut items: impl Iterator<Item = (&'a WorldKey, &'a WorldItem)>,
-        name: &str,
-    ) -> Option<&'a WorldItem> {
-        items.find_map(|(export_name, export)| {
-            let export_name = self.resolve.name_world_key(export_name);
-            (export_name == name).then_some(export)
-        })
     }
 
     pub(crate) fn imports(
@@ -347,6 +337,30 @@ impl Querier {
             String::new()
         };
         format!("{world_package}{}", world.name)
+    }
+
+    /// Get an interface by its ident from a list of world items.
+    fn interface_in_items<'a>(
+        &self,
+        ident: InterfaceIdent,
+        items: impl Iterator<Item = (&'a WorldKey, &'a WorldItem)>,
+    ) -> Option<&Interface> {
+        let item = self.get_world_item_by_name(items, &ident.to_string())?;
+        if let WorldItem::Interface(i) = item {
+            return self.interface_by_id(*i);
+        }
+        None
+    }
+
+    fn get_world_item_by_name<'a>(
+        &self,
+        mut items: impl Iterator<Item = (&'a WorldKey, &'a WorldItem)>,
+        name: &str,
+    ) -> Option<&'a WorldItem> {
+        items.find_map(|(export_name, export)| {
+            let export_name = self.resolve.name_world_key(export_name);
+            (export_name == name).then_some(export)
+        })
     }
 }
 
