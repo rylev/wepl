@@ -7,7 +7,7 @@ use wit_parser::{
     WorldKey,
 };
 
-use crate::command::alt_parser;
+use crate::command::parser;
 
 /// A resolver for a wit world.
 pub struct WorldResolver {
@@ -38,7 +38,7 @@ impl WorldResolver {
     }
 
     /// Get the exported function by the given `FunctionIdent`.
-    pub fn exported_function(&self, ident: alt_parser::Ident) -> Option<&Function> {
+    pub fn exported_function(&self, ident: parser::ItemIdent) -> Option<&Function> {
         match ident.interface {
             Some(i) => {
                 let interface = self.exported_interface(i)?;
@@ -55,7 +55,7 @@ impl WorldResolver {
     }
 
     /// Get the imported function by the given `FunctionIdent`.
-    pub fn imported_function(&self, ident: alt_parser::Ident) -> Option<&Function> {
+    pub fn imported_function(&self, ident: parser::ItemIdent) -> Option<&Function> {
         match ident.interface {
             Some(i) => {
                 let interface = self.imported_interface(i)?;
@@ -72,12 +72,12 @@ impl WorldResolver {
     }
 
     /// Get the exported interface by the given `InterfaceIdent`.
-    pub fn exported_interface(&self, ident: alt_parser::InterfaceIdent) -> Option<&Interface> {
+    pub fn exported_interface(&self, ident: parser::InterfaceIdent) -> Option<&Interface> {
         self.interface_in_items(ident, self.world().exports.iter())
     }
 
     /// Get the imported interface by the given `InterfaceIdent`.
-    pub fn imported_interface(&self, ident: alt_parser::InterfaceIdent) -> Option<&Interface> {
+    pub fn imported_interface(&self, ident: parser::InterfaceIdent) -> Option<&Interface> {
         self.interface_in_items(ident, self.world().imports.iter())
     }
 
@@ -342,7 +342,7 @@ impl WorldResolver {
     /// Get an interface by its ident from a list of world items.
     fn interface_in_items<'a>(
         &self,
-        ident: alt_parser::InterfaceIdent,
+        ident: parser::InterfaceIdent,
         items: impl Iterator<Item = (&'a WorldKey, &'a WorldItem)>,
     ) -> Option<&Interface> {
         let item = self.get_world_item_by_name(items, &ident.to_string())?;

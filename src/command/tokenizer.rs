@@ -54,7 +54,7 @@ impl<'a> Token<'a> {
         let mut chars = rest.chars().peekable();
         let original_offset = rest.offset;
         let Some(first) = chars.next() else {
-            panic!("TODO")
+            return Ok((rest, None));
         };
         let (offset, token_kind) = match first {
             '"' => {
@@ -84,7 +84,9 @@ impl<'a> Token<'a> {
                     .map(|c| c.len_utf8())
                     .sum();
                 let offset = c.len_utf8() + len;
-                let num = rest.str[..offset].parse().expect("TODO");
+                let num = rest.str[..offset]
+                    .parse()
+                    .expect("failed to parse ascii digits as number");
                 (offset, Some(TokenKind::Number(num)))
             }
             c if c.is_whitespace() => (c.len_utf8(), None),

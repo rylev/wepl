@@ -3,11 +3,11 @@ use std::collections::HashMap;
 use anyhow::{bail, Context};
 use wasmtime::component::{self, List, Record, Val};
 
-use crate::{command::alt_parser, runtime::Runtime, wit::WorldResolver};
+use crate::{command::parser, runtime::Runtime, wit::WorldResolver};
 
 pub struct Evaluator<'a> {
     runtime: &'a mut Runtime,
-    querier: &'a WorldResolver,
+    resolver: &'a WorldResolver,
     scope: &'a HashMap<String, Val>,
 }
 
@@ -15,12 +15,12 @@ impl<'a> Evaluator<'a> {
     /// Create a new evaluator
     pub fn new(
         runtime: &'a mut Runtime,
-        querier: &'a WorldResolver,
+        resolver: &'a WorldResolver,
         scope: &'a HashMap<String, Val>,
     ) -> Self {
         Self {
             runtime,
-            querier,
+            resolver,
             scope,
         }
     }
@@ -28,13 +28,13 @@ impl<'a> Evaluator<'a> {
     /// Evaluate the expression with the provided type hint
     pub fn eval(
         &mut self,
-        expr: alt_parser::Expr<'_>,
+        expr: parser::Expr<'_>,
         type_hint: Option<&component::Type>,
     ) -> anyhow::Result<Val> {
         match expr {
-            alt_parser::Expr::Literal(l) => self.eval_literal(l, type_hint),
-            alt_parser::Expr::Ident(ident) => self.resolve_ident(&*ident, type_hint),
-            alt_parser::Expr::FunctionCall(func) => {
+            parser::Expr::Literal(l) => self.eval_literal(l, type_hint),
+            parser::Expr::Ident(ident) => self.resolve_ident(&*ident, type_hint),
+            parser::Expr::FunctionCall(func) => {
                 let ident = func.ident;
                 let mut args = func.args;
                 log::debug!(
@@ -81,12 +81,12 @@ impl<'a> Evaluator<'a> {
     /// Call the function
     pub fn call_func(
         &mut self,
-        ident: alt_parser::Ident,
-        args: Vec<alt_parser::Expr<'_>>,
+        ident: parser::ItemIdent,
+        args: Vec<parser::Expr<'_>>,
     ) -> anyhow::Result<Vec<Val>> {
         log::debug!("Calling function: {ident} with args: {args:?}");
         let func_def = self
-            .querier
+            .resolver
             .exported_function(ident)
             .with_context(|| format!("no function with name '{ident}'"))?;
         let mut evaled_args = Vec::with_capacity(func_def.params.len());
@@ -115,11 +115,11 @@ impl<'a> Evaluator<'a> {
     /// Evaluate a literal using the provided type hint
     pub fn eval_literal(
         &mut self,
-        literal: alt_parser::Literal<'_>,
+        literal: parser::Literal<'_>,
         type_hint: Option<&component::Type>,
     ) -> anyhow::Result<Val> {
         match literal {
-            alt_parser::Literal::List(list) => {
+            parser::Literal::List(list) => {
                 match type_hint {
                     Some(component::Type::List(l)) => {
                         let mut values = Vec::new();
@@ -154,7 +154,7 @@ impl<'a> Evaluator<'a> {
                     }
                 }
             }
-            alt_parser::Literal::Record(mut r) => {
+            parser::Literal::Record(mut r) => {
                 let ty = match type_hint {
                     Some(component::Type::Record(r)) => r,
                     Some(t) => bail!(
@@ -181,7 +181,7 @@ impl<'a> Evaluator<'a> {
                 }
                 Ok(Val::Record(Record::new(ty, values)?))
             }
-            alt_parser::Literal::String(s) => {
+            parser::Literal::String(s) => {
                 let val = Val::String(s.to_owned().into());
                 match type_hint {
                     Some(component::Type::Result(r)) => r.new_val(match (r.ok(), r.err()) {
@@ -192,7 +192,7 @@ impl<'a> Evaluator<'a> {
                     _ => Ok(val),
                 }
             }
-            alt_parser::Literal::Number(n) => match type_hint {
+            parser::Literal::Number(n) => match type_hint {
                 Some(component::Type::U8) => Ok(Val::U8(n.try_into()?)),
                 _ => Ok(Val::S32(n.try_into()?)),
             },
