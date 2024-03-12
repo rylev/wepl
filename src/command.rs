@@ -1,46 +1,45 @@
+pub mod alt_parser;
 pub mod parser;
+mod tokenizer;
 use std::collections::HashMap;
 
-use anyhow::{anyhow, bail, Context as _};
+use anyhow::{bail, Context as _};
 use colored::Colorize;
 use wasmtime::component::Val;
 
+use self::alt_parser::ItemIdent;
+use self::tokenizer::TokenKind;
+
 use super::runtime::Runtime;
 use super::wit::WorldResolver;
-use crate::command::parser::ItemIdent;
 use crate::evaluator::Evaluator;
 use crate::wit::Expansion;
-use parser::SpannedStr;
 
 pub enum Cmd<'a> {
     BuiltIn {
-        name: SpannedStr<'a>,
-        args: Vec<SpannedStr<'a>>,
+        name: &'a str,
+        args: Vec<tokenizer::Token<'a>>,
     },
-    Eval(parser::Expr<'a>),
+    Eval(alt_parser::Expr<'a>),
     Assign {
-        ident: SpannedStr<'a>,
-        value: parser::Expr<'a>,
+        ident: &'a str,
+        value: alt_parser::Expr<'a>,
     },
 }
 
 impl<'a> Cmd<'a> {
-    pub fn parse(s: &'a str) -> anyhow::Result<Option<Cmd<'a>>> {
-        let s = s.trim();
-        if s.is_empty() {
-            return Ok(None);
-        }
-
-        // try to parse a function
-        let (rest, line) = parser::Line::parse(s).map_err(|e| anyhow!("{e}"))?;
-        if !rest.is_empty() {
-            anyhow::bail!("unexpected end of input: '{rest}'");
-        }
+    pub fn parse(input: &'a str) -> anyhow::Result<Option<Cmd<'a>>> {
+        let tokens = tokenizer::Token::tokenize(input)?;
+        let line = alt_parser::Line::parse(tokens)
+            .expect("TODO: using ? here leads to borrow checker errors");
         log::debug!("Parsed line: {line:?}");
         match line {
-            parser::Line::Expr(expr) => Ok(Some(Cmd::Eval(expr))),
-            parser::Line::Assignment(ident, value) => Ok(Some(Cmd::Assign { ident, value })),
-            parser::Line::Builtin(name, args) => Ok(Some(Cmd::BuiltIn { name, args })),
+            alt_parser::Line::Expr(expr) => Ok(Some(Cmd::Eval(expr))),
+            alt_parser::Line::Assignment(ident, value) => Ok(Some(Cmd::Assign { ident, value })),
+            alt_parser::Line::BuiltIn(builtin) => Ok(Some(Cmd::BuiltIn {
+                name: builtin.name,
+                args: builtin.rest,
+            })),
         }
     }
 
@@ -56,11 +55,11 @@ impl<'a> Cmd<'a> {
         let mut eval = Evaluator::new(runtime, querier, scope);
         match self {
             Cmd::Eval(expr) => match expr {
-                parser::Expr::Literal(l) => {
+                alt_parser::Expr::Literal(l) => {
                     let val = eval.eval_literal(l, None)?;
                     println!("{}: {}", format_val(&val), val_as_type(&val));
                 }
-                parser::Expr::Ident(ident) => match scope.get(&*ident) {
+                alt_parser::Expr::Ident(ident) => match scope.get(ident) {
                     Some(val) => {
                         println!("{}: {}", format_val(val), val_as_type(val))
                     }
@@ -68,8 +67,8 @@ impl<'a> Cmd<'a> {
                         anyhow::bail!("no identifier '{ident}' in scope")
                     }
                 },
-                parser::Expr::FunctionCall(ident, args) => {
-                    let results = eval.call_func(ident, args)?;
+                alt_parser::Expr::FunctionCall(func) => {
+                    let results = eval.call_func(func.ident, func.args)?;
                     println!(
                         "{}",
                         results
@@ -99,16 +98,22 @@ impl<'a> Cmd<'a> {
                     }
                 }
             }
-            Cmd::BuiltIn { name, args } if name == "imports" => {
+            Cmd::BuiltIn {
+                name: "imports",
+                args,
+            } => {
                 let include_wasi = match args.as_slice() {
                     [] => true,
-                    [flag] if *flag == "--no-wasi" => false,
-                    [flag] => {
-                        bail!("unrecorgnized flag for imports builtin '{}'", flag)
-                    }
+                    [t] => match t.token() {
+                        TokenKind::Flag("no-wasi") => false,
+                        TokenKind::Flag(flag) => {
+                            bail!("unrecognized flag for imports builtin '{flag}'")
+                        }
+                        _ => bail!("unrecognized token {}", t.input.str),
+                    },
                     _ => {
                         bail!(
-                            "wrong number of arguments to imports function. Expected 0 got {}",
+                            "wrong number of arguments to imports function. Expected 1 got {}",
                             args.len()
                         )
                     }
@@ -120,34 +125,37 @@ impl<'a> Cmd<'a> {
                     }
                 }
             }
-            Cmd::BuiltIn { name, args } if name == "type" => {
-                match args.as_slice() {
-                    &[name] => {
-                        let types = querier.types_by_name(&*name);
-                        for (interface, ty) in &types {
-                            let typ = querier.display_wit_type_def(ty, Expansion::Expanded(1));
-                            let name = &ty.name;
-                            let interface = interface.and_then(|i| querier.interface_name(i));
-                            let ident = match (interface, name) {
-                                (Some(i), Some(n)) => format!("{i}#{n}: "),
-                                (None, Some(n)) => format!("{n}: "),
-                                _ => todo!(),
-                            };
-                            println!("{ident}{typ}");
-                        }
-                    }
-                    _ => bail!(
-                        "wrong number of arguments to inspect function. Expected 1 got {}",
-                        args.len()
-                    ),
-                };
-            }
+            // Cmd::BuiltIn { name: "type", args } => {
+            //     match args.as_slice() {
+            //         &[name] => {
+            //             let types = querier.types_by_name(&*name);
+            //             for (interface, ty) in &types {
+            //                 let typ = querier.display_wit_type_def(ty, Expansion::Expanded(1));
+            //                 let name = &ty.name;
+            //                 let interface = interface.and_then(|i| querier.interface_name(i));
+            //                 let ident = match (interface, name) {
+            //                     (Some(i), Some(n)) => format!("{i}#{n}: "),
+            //                     (None, Some(n)) => format!("{n}: "),
+            //                     _ => todo!(),
+            //                 };
+            //                 println!("{ident}{typ}");
+            //             }
+            //         }
+            //         _ => bail!(
+            //             "wrong number of arguments to inspect function. Expected 1 got {}",
+            //             args.len()
+            //         ),
+            //     };
+            // }
             Cmd::BuiltIn { name, args } if name == "compose" => {
-                let &[path] = args.as_slice() else {
+                let &[token] = args.as_slice() else {
                     bail!(
                         "wrong number of arguments to compose function. Expected 1 got {}",
                         args.len()
                     )
+                };
+                let TokenKind::String(path) = token.token() else {
+                    bail!("unrecognized token {}", token.input.str);
                 };
                 let adapter =
                     std::fs::read(&*path).context("could not read path to adapter module")?;
@@ -155,29 +163,31 @@ impl<'a> Cmd<'a> {
                 *querier = WorldResolver::from_bytes(runtime.component_bytes())?;
             }
             Cmd::BuiltIn { name, args } if name == "link" => {
-                let &[import_ident, export_ident, component] = args.as_slice() else {
-                    bail!("wrong number of arguments. Expected 3 got {}", args.len())
+                let mut args = args.into_iter().collect();
+                let Ok(Some(import_ident)) = ItemIdent::try_parse(&mut args) else {
+                    bail!("import_ident is not a proper item identifier");
                 };
-                let Ok((_, import_ident)) = ItemIdent::parse((&*import_ident).into()) else {
-                    bail!("'{import_ident}' is not a proper item identifier");
-                };
-                let Ok((_, export_ident)) = ItemIdent::parse((&*export_ident).into()) else {
-                    bail!("'{export_ident}' is not a proper item identifier");
+                let Ok(Some(export_ident)) = ItemIdent::try_parse(&mut args) else {
+                    bail!("export_ident is not a proper item identifier");
                 };
 
-                let component_bytes = std::fs::read(component.as_str())
+                let Some(TokenKind::String(component)) = args.pop_front().map(|t| t.token()) else {
+                    bail!("TODO");
+                };
+                let component_bytes = std::fs::read(component)
                     .with_context(|| format!("could not read component '{component}'"))?;
                 runtime.stub(&querier, import_ident, export_ident, &component_bytes)?;
             }
-            Cmd::BuiltIn { name, args } if name == "inspect" => {
-                let &[ident] = args.as_slice() else {
-                    bail!("wrong number of arguments. Expected 1 got {}", args.len())
-                };
-                let Ok((_, ident)) = ItemIdent::parse((&*ident).into()) else {
-                    bail!("'{ident}' is not a proper item identifier");
+            Cmd::BuiltIn {
+                name: "inspect",
+                args,
+            } => {
+                let mut args = args.into_iter().collect();
+                let Ok(Some(ident)) = ItemIdent::try_parse(&mut args) else {
+                    bail!("ident is not a proper item identifier");
                 };
                 match ident {
-                    ItemIdent::Function(ident) => {
+                    ItemIdent::Item(ident) => {
                         let f = querier
                             .exported_function(ident)
                             .or_else(|| querier.imported_function(ident));

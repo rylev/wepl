@@ -14,9 +14,10 @@ use wasmtime_wasi::preview2::{
     WasiView,
 };
 
-use crate::command::parser::{FunctionIdent, InterfaceIdent, ItemIdent};
-
-use super::wit::WorldResolver;
+use crate::{
+    command::alt_parser::{self, Ident},
+    wit::WorldResolver,
+};
 
 pub struct Runtime {
     engine: Engine,
@@ -97,7 +98,7 @@ impl Runtime {
         })
     }
 
-    pub fn get_func(&mut self, ident: FunctionIdent) -> anyhow::Result<Func> {
+    pub fn get_func(&mut self, ident: Ident) -> anyhow::Result<Func> {
         let func = match ident.interface {
             Some(i) => {
                 let mut exports = self.instance.exports(&mut self.store);
@@ -107,13 +108,13 @@ impl Runtime {
                     .with_context(|| {
                         format!("could not find exported instance with name '{instance_name}'")
                     })?
-                    .func(&ident.function)
+                    .func(&ident.item)
             }
             None => self
                 .instance
                 .exports(&mut self.store)
                 .root()
-                .func(&ident.function),
+                .func(&ident.item),
         };
         func.with_context(|| format!("could not find function '{ident}' in instance"))
     }
@@ -137,21 +138,23 @@ impl Runtime {
     pub fn stub(
         &mut self,
         querier: &WorldResolver,
-        import_ident: ItemIdent<'_>,
-        export_ident: ItemIdent<'_>,
+        import_ident: alt_parser::ItemIdent<'_>,
+        export_ident: alt_parser::ItemIdent<'_>,
         component_bytes: &[u8],
     ) -> anyhow::Result<()> {
         match (import_ident, export_ident) {
-            (ItemIdent::Function(import_ident), ItemIdent::Function(export_ident)) => {
-                self.stub_function(querier, import_ident, export_ident, component_bytes)
-            }
-            (ItemIdent::Interface(import_ident), ItemIdent::Interface(export_ident)) => {
-                self.stub_interface(querier, import_ident, export_ident, component_bytes)
-            }
-            (ItemIdent::Interface(_), ItemIdent::Function(_)) => {
+            (
+                alt_parser::ItemIdent::Item(import_ident),
+                alt_parser::ItemIdent::Item(export_ident),
+            ) => self.stub_function(querier, import_ident, export_ident, component_bytes),
+            (
+                alt_parser::ItemIdent::Interface(import_ident),
+                alt_parser::ItemIdent::Interface(export_ident),
+            ) => self.stub_interface(querier, import_ident, export_ident, component_bytes),
+            (alt_parser::ItemIdent::Interface(_), alt_parser::ItemIdent::Item(_)) => {
                 anyhow::bail!("cannot satisfy interface import with a function")
             }
-            (ItemIdent::Function(_), ItemIdent::Interface(_)) => {
+            (alt_parser::ItemIdent::Item(_), alt_parser::ItemIdent::Interface(_)) => {
                 anyhow::bail!("cannot satisfy function import with an interface")
             }
         }
@@ -160,8 +163,8 @@ impl Runtime {
     pub fn stub_interface(
         &mut self,
         querier: &WorldResolver,
-        import_ident: InterfaceIdent<'_>,
-        export_ident: InterfaceIdent<'_>,
+        import_ident: alt_parser::InterfaceIdent<'_>,
+        export_ident: alt_parser::InterfaceIdent<'_>,
         component_bytes: &[u8],
     ) -> anyhow::Result<()> {
         let component = load_component(&self.engine, component_bytes)?;
@@ -255,8 +258,8 @@ impl Runtime {
     pub fn stub_function(
         &mut self,
         querier: &WorldResolver,
-        import_ident: FunctionIdent<'_>,
-        export_ident: FunctionIdent<'_>,
+        import_ident: alt_parser::Ident<'_>,
+        export_ident: alt_parser::Ident<'_>,
         component_bytes: &[u8],
     ) -> anyhow::Result<()> {
         // type checking
@@ -286,15 +289,15 @@ impl Runtime {
                     let mut instance = export
                         .instance(&interface.to_string())
                         .with_context(|| format!("no export named '{interface} found'"))?;
-                    instance.func(&export_ident.function)
+                    instance.func(&export_ident.item)
                 }
-                None => export_instance.get_func(&mut *store_lock, &export_ident.function),
+                None => export_instance.get_func(&mut *store_lock, &export_ident.item),
             }
         }
         .with_context(|| format!("no function found named '{export_ident}'"))?;
 
         let store = self.import_impls.store.clone();
-        let name = import_ident.function.as_str().to_owned();
+        let name = import_ident.item.to_owned();
         match import_ident.interface {
             Some(interface) => {
                 let mut instance = self
