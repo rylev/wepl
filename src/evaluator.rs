@@ -3,15 +3,11 @@ use std::collections::HashMap;
 use anyhow::{bail, Context};
 use wasmtime::component::{self, List, Record, Val};
 
-use crate::{
-    command::parser::{self, FunctionIdent},
-    runtime::Runtime,
-    wit::WorldResolver,
-};
+use crate::{command::parser, runtime::Runtime, wit::WorldResolver};
 
 pub struct Evaluator<'a> {
     runtime: &'a mut Runtime,
-    querier: &'a WorldResolver,
+    resolver: &'a WorldResolver,
     scope: &'a HashMap<String, Val>,
 }
 
@@ -19,12 +15,12 @@ impl<'a> Evaluator<'a> {
     /// Create a new evaluator
     pub fn new(
         runtime: &'a mut Runtime,
-        querier: &'a WorldResolver,
+        resolver: &'a WorldResolver,
         scope: &'a HashMap<String, Val>,
     ) -> Self {
         Self {
             runtime,
-            querier,
+            resolver,
             scope,
         }
     }
@@ -38,7 +34,9 @@ impl<'a> Evaluator<'a> {
         match expr {
             parser::Expr::Literal(l) => self.eval_literal(l, type_hint),
             parser::Expr::Ident(ident) => self.resolve_ident(&*ident, type_hint),
-            parser::Expr::FunctionCall(ident, mut args) => {
+            parser::Expr::FunctionCall(func) => {
+                let ident = func.ident;
+                let mut args = func.args;
                 log::debug!(
                     "Checking for type constructor for {ident} #args={} type_hint={type_hint:?}",
                     args.len()
@@ -46,22 +44,20 @@ impl<'a> Evaluator<'a> {
                 // If the preferred type has some sort of type constructor, try that first
                 match type_hint {
                     Some(component::Type::Option(o))
-                        if ident.interface.is_none()
-                            && ident.function == "some"
-                            && args.len() == 1 =>
+                        if ident.interface.is_none() && ident.item == "some" && args.len() == 1 =>
                     {
                         let val = self.eval(args.remove(0), Some(&o.ty()))?;
                         return o.new_val(Some(val));
                     }
                     Some(component::Type::Result(r)) if args.len() == 1 => {
                         if let Some(ok) = r.ok() {
-                            if ident.interface.is_none() && ident.function == "ok" {
+                            if ident.interface.is_none() && ident.item == "ok" {
                                 let val = self.eval(args.remove(0), Some(&ok))?;
                                 return r.new_val(Ok(Some(val)));
                             }
                         }
                         if let Some(err) = r.err() {
-                            if ident.interface.is_none() && ident.function == "err" {
+                            if ident.interface.is_none() && ident.item == "err" {
                                 let val = self.eval(args.remove(0), Some(&err))?;
                                 return r.new_val(Err(Some(val)));
                             }
@@ -85,12 +81,12 @@ impl<'a> Evaluator<'a> {
     /// Call the function
     pub fn call_func(
         &mut self,
-        ident: FunctionIdent,
+        ident: parser::ItemIdent,
         args: Vec<parser::Expr<'_>>,
     ) -> anyhow::Result<Vec<Val>> {
         log::debug!("Calling function: {ident} with args: {args:?}");
         let func_def = self
-            .querier
+            .resolver
             .exported_function(ident)
             .with_context(|| format!("no function with name '{ident}'"))?;
         let mut evaled_args = Vec::with_capacity(func_def.params.len());
@@ -177,20 +173,16 @@ impl<'a> Evaluator<'a> {
                     .map(|(index, field)| (field.name, index))
                     .collect::<HashMap<_, _>>();
                 // Sort the fields since wasmtime expects the fields to be in the defined order
-                r.fields.sort_by(|(f1, _), (f2, _)| {
-                    types
-                        .get(f1.as_str())
-                        .unwrap()
-                        .cmp(types.get(f2.as_str()).unwrap())
-                });
+                r.fields
+                    .sort_by(|(f1, _), (f2, _)| types.get(f1).unwrap().cmp(types.get(f2).unwrap()));
 
                 for ((name, field_expr), field_type) in r.fields.into_iter().zip(ty.fields()) {
-                    values.push((name.as_str(), self.eval(field_expr, Some(&field_type.ty))?));
+                    values.push((name, self.eval(field_expr, Some(&field_type.ty))?));
                 }
                 Ok(Val::Record(Record::new(ty, values)?))
             }
             parser::Literal::String(s) => {
-                let val = Val::String(s.as_str().to_owned().into());
+                let val = Val::String(s.to_owned().into());
                 match type_hint {
                     Some(component::Type::Result(r)) => r.new_val(match (r.ok(), r.err()) {
                         (Some(_), _) => Ok(Some(val)),
@@ -200,7 +192,7 @@ impl<'a> Evaluator<'a> {
                     _ => Ok(val),
                 }
             }
-            parser::Literal::Num(n) => match type_hint {
+            parser::Literal::Number(n) => match type_hint {
                 Some(component::Type::U8) => Ok(Val::U8(n.try_into()?)),
                 _ => Ok(Val::S32(n.try_into()?)),
             },

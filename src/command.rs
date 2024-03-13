@@ -1,46 +1,43 @@
 pub mod parser;
+mod tokenizer;
 use std::collections::HashMap;
 
-use anyhow::{anyhow, bail, Context as _};
+use anyhow::{bail, Context as _};
 use colored::Colorize;
 use wasmtime::component::Val;
 
+use self::parser::Ident;
+use self::tokenizer::TokenKind;
+
 use super::runtime::Runtime;
 use super::wit::WorldResolver;
-use crate::command::parser::ItemIdent;
 use crate::evaluator::Evaluator;
 use crate::wit::Expansion;
-use parser::SpannedStr;
 
 pub enum Cmd<'a> {
     BuiltIn {
-        name: SpannedStr<'a>,
-        args: Vec<SpannedStr<'a>>,
+        name: &'a str,
+        args: Vec<tokenizer::Token<'a>>,
     },
     Eval(parser::Expr<'a>),
     Assign {
-        ident: SpannedStr<'a>,
+        ident: &'a str,
         value: parser::Expr<'a>,
     },
 }
 
 impl<'a> Cmd<'a> {
-    pub fn parse(s: &'a str) -> anyhow::Result<Option<Cmd<'a>>> {
-        let s = s.trim();
-        if s.is_empty() {
-            return Ok(None);
-        }
-
-        // try to parse a function
-        let (rest, line) = parser::Line::parse(s).map_err(|e| anyhow!("{e}"))?;
-        if !rest.is_empty() {
-            anyhow::bail!("unexpected end of input: '{rest}'");
-        }
+    pub fn parse(input: &'a str) -> anyhow::Result<Option<Cmd<'a>>> {
+        let tokens = tokenizer::Token::tokenize(input)?;
+        let line = parser::Line::parse(tokens).map_err(|e| anyhow::anyhow!("{e}"))?;
         log::debug!("Parsed line: {line:?}");
         match line {
             parser::Line::Expr(expr) => Ok(Some(Cmd::Eval(expr))),
             parser::Line::Assignment(ident, value) => Ok(Some(Cmd::Assign { ident, value })),
-            parser::Line::Builtin(name, args) => Ok(Some(Cmd::BuiltIn { name, args })),
+            parser::Line::BuiltIn(builtin) => Ok(Some(Cmd::BuiltIn {
+                name: builtin.name,
+                args: builtin.rest,
+            })),
         }
     }
 
@@ -50,17 +47,17 @@ impl<'a> Cmd<'a> {
     pub fn run(
         self,
         runtime: &mut Runtime,
-        querier: &mut WorldResolver,
+        resolver: &mut WorldResolver,
         scope: &mut HashMap<String, Val>,
     ) -> anyhow::Result<bool> {
-        let mut eval = Evaluator::new(runtime, querier, scope);
+        let mut eval = Evaluator::new(runtime, resolver, scope);
         match self {
             Cmd::Eval(expr) => match expr {
                 parser::Expr::Literal(l) => {
                     let val = eval.eval_literal(l, None)?;
                     println!("{}: {}", format_val(&val), val_as_type(&val));
                 }
-                parser::Expr::Ident(ident) => match scope.get(&*ident) {
+                parser::Expr::Ident(ident) => match scope.get(ident) {
                     Some(val) => {
                         println!("{}: {}", format_val(val), val_as_type(val))
                     }
@@ -68,8 +65,8 @@ impl<'a> Cmd<'a> {
                         anyhow::bail!("no identifier '{ident}' in scope")
                     }
                 },
-                parser::Expr::FunctionCall(ident, args) => {
-                    let results = eval.call_func(ident, args)?;
+                parser::Expr::FunctionCall(func) => {
+                    let results = eval.call_func(func.ident, func.args)?;
                     println!(
                         "{}",
                         results
@@ -85,49 +82,61 @@ impl<'a> Cmd<'a> {
                 println!("{}: {}", ident, val_as_type(&val));
                 scope.insert(ident.into(), val);
             }
-            Cmd::BuiltIn { name, args } if name == "exports" => {
+            Cmd::BuiltIn {
+                name: "exports",
+                args,
+            } => {
                 let &[] = args.as_slice() else {
                     bail!(
                         "wrong number of arguments to exports function. Expected 0 got {}",
                         args.len()
                     )
                 };
-                for (export_name, export) in querier.world().exports.iter() {
-                    let export_name = querier.world_item_name(export_name);
-                    if let Some(ty) = format_world_item(export, querier) {
+                for (export_name, export) in resolver.world().exports.iter() {
+                    let export_name = resolver.world_item_name(export_name);
+                    if let Some(ty) = format_world_item(export, resolver) {
                         println!("{}: {ty}", export_name.bold());
                     }
                 }
             }
-            Cmd::BuiltIn { name, args } if name == "imports" => {
+            Cmd::BuiltIn {
+                name: "imports",
+                args,
+            } => {
                 let include_wasi = match args.as_slice() {
                     [] => true,
-                    [flag] if *flag == "--no-wasi" => false,
-                    [flag] => {
-                        bail!("unrecorgnized flag for imports builtin '{}'", flag)
-                    }
+                    [t] => match t.token() {
+                        TokenKind::Flag("no-wasi") => false,
+                        TokenKind::Flag(flag) => {
+                            bail!("unrecognized flag for imports builtin '{flag}'")
+                        }
+                        _ => bail!("unrecognized token {}", t.input.str),
+                    },
                     _ => {
                         bail!(
-                            "wrong number of arguments to imports function. Expected 0 got {}",
+                            "wrong number of arguments to imports function. Expected 1 got {}",
                             args.len()
                         )
                     }
                 };
-                for (import_name, import) in querier.imports(include_wasi) {
-                    let import_name = querier.world_item_name(import_name);
-                    if let Some(ty) = format_world_item(import, querier) {
+                for (import_name, import) in resolver.imports(include_wasi) {
+                    let import_name = resolver.world_item_name(import_name);
+                    if let Some(ty) = format_world_item(import, resolver) {
                         println!("{}: {ty}", import_name.bold());
                     }
                 }
             }
-            Cmd::BuiltIn { name, args } if name == "type" => {
+            Cmd::BuiltIn { name: "type", args } => {
                 match args.as_slice() {
-                    &[name] => {
-                        let types = querier.types_by_name(&*name);
+                    &[token] => {
+                        let TokenKind::Ident(name) = token.token() else {
+                            bail!("unrecognized token")
+                        };
+                        let types = resolver.types_by_name(name);
                         for (interface, ty) in &types {
-                            let typ = querier.display_wit_type_def(ty, Expansion::Expanded(1));
+                            let typ = resolver.display_wit_type_def(ty, Expansion::Expanded(1));
                             let name = &ty.name;
-                            let interface = interface.and_then(|i| querier.interface_name(i));
+                            let interface = interface.and_then(|i| resolver.interface_name(i));
                             let ident = match (interface, name) {
                                 (Some(i), Some(n)) => format!("{i}#{n}: "),
                                 (None, Some(n)) => format!("{n}: "),
@@ -142,56 +151,64 @@ impl<'a> Cmd<'a> {
                     ),
                 };
             }
-            Cmd::BuiltIn { name, args } if name == "compose" => {
-                let &[path] = args.as_slice() else {
+            Cmd::BuiltIn {
+                name: "compose",
+                args,
+            } => {
+                let &[token] = args.as_slice() else {
                     bail!(
                         "wrong number of arguments to compose function. Expected 1 got {}",
                         args.len()
                     )
                 };
+                let TokenKind::String(path) = token.token() else {
+                    bail!("unrecognized token {}", token.input.str);
+                };
                 let adapter =
                     std::fs::read(&*path).context("could not read path to adapter module")?;
                 runtime.compose(&adapter)?;
-                *querier = WorldResolver::from_bytes(runtime.component_bytes())?;
+                *resolver = WorldResolver::from_bytes(runtime.component_bytes())?;
             }
-            Cmd::BuiltIn { name, args } if name == "link" => {
-                let &[import_ident, export_ident, component] = args.as_slice() else {
-                    bail!("wrong number of arguments. Expected 3 got {}", args.len())
+            Cmd::BuiltIn { name: "link", args } => {
+                let mut args = args.into_iter().collect();
+                let Ok(Some(import_ident)) = Ident::try_parse(&mut args) else {
+                    bail!("import_ident is not a proper item identifier");
                 };
-                let Ok((_, import_ident)) = ItemIdent::parse((&*import_ident).into()) else {
-                    bail!("'{import_ident}' is not a proper item identifier");
-                };
-                let Ok((_, export_ident)) = ItemIdent::parse((&*export_ident).into()) else {
-                    bail!("'{export_ident}' is not a proper item identifier");
+                let Ok(Some(export_ident)) = Ident::try_parse(&mut args) else {
+                    bail!("export_ident is not a proper item identifier");
                 };
 
-                let component_bytes = std::fs::read(component.as_str())
-                    .with_context(|| format!("could not read component '{component}'"))?;
-                runtime.stub(&querier, import_ident, export_ident, &component_bytes)?;
-            }
-            Cmd::BuiltIn { name, args } if name == "inspect" => {
-                let &[ident] = args.as_slice() else {
-                    bail!("wrong number of arguments. Expected 1 got {}", args.len())
+                let Some(TokenKind::String(component)) = args.pop_front().map(|t| t.token()) else {
+                    bail!("component path is not a string");
                 };
-                let Ok((_, ident)) = ItemIdent::parse((&*ident).into()) else {
-                    bail!("'{ident}' is not a proper item identifier");
+                let component_bytes = std::fs::read(component)
+                    .with_context(|| format!("could not read component '{component}'"))?;
+                runtime.stub(&resolver, import_ident, export_ident, &component_bytes)?;
+            }
+            Cmd::BuiltIn {
+                name: "inspect",
+                args,
+            } => {
+                let mut args = args.into_iter().collect();
+                let Ok(Some(ident)) = Ident::try_parse(&mut args) else {
+                    bail!("ident is not a proper item identifier");
                 };
                 match ident {
-                    ItemIdent::Function(ident) => {
-                        let f = querier
+                    Ident::Item(ident) => {
+                        let f = resolver
                             .exported_function(ident)
-                            .or_else(|| querier.imported_function(ident));
+                            .or_else(|| resolver.imported_function(ident));
                         match f {
-                            Some(f) => println!("{}", format_function(f, querier)),
+                            Some(f) => println!("{}", format_function(f, resolver)),
                             None => bail!("Could not find imported or exported function '{ident}'"),
                         }
                     }
-                    ItemIdent::Interface(ident) => {
-                        let i = querier
+                    Ident::Interface(ident) => {
+                        let i = resolver
                             .exported_interface(ident)
-                            .or_else(|| querier.imported_interface(ident));
+                            .or_else(|| resolver.imported_interface(ident));
                         match i {
-                            Some(f) => println!("{}", format_interface(f, querier)),
+                            Some(f) => println!("{}", format_interface(f, resolver)),
                             None => {
                                 bail!("Could not find imported or exported interface '{ident}'")
                             }
@@ -199,8 +216,14 @@ impl<'a> Cmd<'a> {
                     }
                 }
             }
-            Cmd::BuiltIn { name, args: _ } if name == "help" => print_help(),
-            Cmd::BuiltIn { name, args: _ } if name == "clear" => return Ok(true),
+            Cmd::BuiltIn {
+                name: "help",
+                args: _,
+            } => print_help(),
+            Cmd::BuiltIn {
+                name: "clear",
+                args: _,
+            } => return Ok(true),
             Cmd::BuiltIn { name, args: _ } => {
                 bail!("Unrecognized built-in function '{name}'")
             }
@@ -226,22 +249,22 @@ There are also builtin functions that can be called with a preceding '.'. Suppor
   .inspect $item            inspect an item `$item` in scope (`?` is alias for this built-in)")
 }
 
-fn format_world_item(item: &wit_parser::WorldItem, querier: &WorldResolver) -> Option<String> {
+fn format_world_item(item: &wit_parser::WorldItem, resolver: &WorldResolver) -> Option<String> {
     match item {
-        wit_parser::WorldItem::Function(f) => Some(format_function(f, querier)),
+        wit_parser::WorldItem::Function(f) => Some(format_function(f, resolver)),
         wit_parser::WorldItem::Interface(id) => {
-            let interface = querier.interface_by_id(*id).unwrap();
+            let interface = resolver.interface_by_id(*id).unwrap();
             if interface.functions.is_empty() {
                 return None;
             }
-            let output = format_interface(interface, querier);
+            let output = format_interface(interface, resolver);
             Some(output)
         }
         wit_parser::WorldItem::Type(_) => None,
     }
 }
 
-fn format_interface(interface: &wit_parser::Interface, querier: &WorldResolver) -> String {
+fn format_interface(interface: &wit_parser::Interface, resolver: &WorldResolver) -> String {
     use std::fmt::Write;
     let mut output = String::from("{\n");
     for (_, fun) in &interface.functions {
@@ -249,7 +272,7 @@ fn format_interface(interface: &wit_parser::Interface, querier: &WorldResolver) 
             &mut output,
             "    {}: {}",
             fun.name.bold(),
-            format_function(fun, querier)
+            format_function(fun, resolver)
         )
         .unwrap();
     }
@@ -257,16 +280,16 @@ fn format_interface(interface: &wit_parser::Interface, querier: &WorldResolver) 
     output
 }
 
-fn format_function(f: &wit_parser::Function, querier: &WorldResolver) -> String {
+fn format_function(f: &wit_parser::Function, resolver: &WorldResolver) -> String {
     let mut params = Vec::new();
     for (param_name, param_type) in &f.params {
-        let ty = querier.display_wit_type(param_type, Expansion::Collapsed);
+        let ty = resolver.display_wit_type(param_type, Expansion::Collapsed);
         params.push(format!("{param_name}: {}", ty.italic()));
     }
     let params = params.join(", ");
     let rets = match &f.results {
         wit_parser::Results::Anon(t) => {
-            let t = querier.display_wit_type(t, Expansion::Collapsed);
+            let t = resolver.display_wit_type(t, Expansion::Collapsed);
             format!(" -> {}", t.italic())
         }
         wit_parser::Results::Named(n) if n.is_empty() => String::new(),
@@ -274,7 +297,7 @@ fn format_function(f: &wit_parser::Function, querier: &WorldResolver) -> String 
             let params = params
                 .iter()
                 .map(|(name, t)| {
-                    let t = querier.display_wit_type(t, Expansion::Collapsed);
+                    let t = resolver.display_wit_type(t, Expansion::Collapsed);
                     format!("{name}: {t}")
                 })
                 .collect::<Vec<_>>()

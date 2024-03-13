@@ -14,9 +14,10 @@ use wasmtime_wasi::preview2::{
     WasiView,
 };
 
-use crate::command::parser::{FunctionIdent, InterfaceIdent, ItemIdent};
-
-use super::wit::WorldResolver;
+use crate::{
+    command::parser::{self, ItemIdent},
+    wit::WorldResolver,
+};
 
 pub struct Runtime {
     engine: Engine,
@@ -30,7 +31,7 @@ pub struct Runtime {
 impl Runtime {
     pub fn init(
         component_bytes: Vec<u8>,
-        querier: &WorldResolver,
+        resolver: &WorldResolver,
         stub_import: impl Fn(&str) + Sync + Send + Clone + 'static,
     ) -> anyhow::Result<Self> {
         let engine = load_engine()?;
@@ -38,13 +39,13 @@ impl Runtime {
         let mut linker = Linker::<Context>::new(&engine);
         linker.allow_shadowing(true);
 
-        let imports_wasi_cli = querier.imports_wasi_cli();
+        let imports_wasi_cli = resolver.imports_wasi_cli();
         if imports_wasi_cli {
             log::debug!("Linking with wasi");
             wasmtime_wasi::preview2::command::sync::add_to_linker(&mut linker)?;
         }
-        for (import_name, import) in querier.imports(!imports_wasi_cli) {
-            let import_name = querier.world_item_name(import_name);
+        for (import_name, import) in resolver.imports(!imports_wasi_cli) {
+            let import_name = resolver.world_item_name(import_name);
             let stub_import = stub_import.clone();
             match import {
                 wit_parser::WorldItem::Function(f) => {
@@ -56,7 +57,7 @@ impl Runtime {
                         })?;
                 }
                 wit_parser::WorldItem::Interface(i) => {
-                    let interface = querier.interface_by_id(*i).unwrap();
+                    let interface = resolver.interface_by_id(*i).unwrap();
                     let mut root = linker.root();
                     let mut instance = root.instance(&import_name)?;
                     for (_, f) in interface.functions.iter() {
@@ -68,7 +69,7 @@ impl Runtime {
                         })?;
                     }
                     for (name, t) in &interface.types {
-                        let t = querier.type_by_id(*t).unwrap();
+                        let t = resolver.type_by_id(*t).unwrap();
                         match &t.kind {
                             wit_parser::TypeDefKind::Resource => {
                                 let ty = wasmtime::component::ResourceType::host::<()>();
@@ -97,7 +98,7 @@ impl Runtime {
         })
     }
 
-    pub fn get_func(&mut self, ident: FunctionIdent) -> anyhow::Result<Func> {
+    pub fn get_func(&mut self, ident: ItemIdent) -> anyhow::Result<Func> {
         let func = match ident.interface {
             Some(i) => {
                 let mut exports = self.instance.exports(&mut self.store);
@@ -107,13 +108,13 @@ impl Runtime {
                     .with_context(|| {
                         format!("could not find exported instance with name '{instance_name}'")
                     })?
-                    .func(&ident.function)
+                    .func(&ident.item)
             }
             None => self
                 .instance
                 .exports(&mut self.store)
                 .root()
-                .func(&ident.function),
+                .func(&ident.item),
         };
         func.with_context(|| format!("could not find function '{ident}' in instance"))
     }
@@ -136,22 +137,22 @@ impl Runtime {
     /// export needed.
     pub fn stub(
         &mut self,
-        querier: &WorldResolver,
-        import_ident: ItemIdent<'_>,
-        export_ident: ItemIdent<'_>,
+        resolver: &WorldResolver,
+        import_ident: parser::Ident<'_>,
+        export_ident: parser::Ident<'_>,
         component_bytes: &[u8],
     ) -> anyhow::Result<()> {
         match (import_ident, export_ident) {
-            (ItemIdent::Function(import_ident), ItemIdent::Function(export_ident)) => {
-                self.stub_function(querier, import_ident, export_ident, component_bytes)
+            (parser::Ident::Item(import_ident), parser::Ident::Item(export_ident)) => {
+                self.stub_function(resolver, import_ident, export_ident, component_bytes)
             }
-            (ItemIdent::Interface(import_ident), ItemIdent::Interface(export_ident)) => {
-                self.stub_interface(querier, import_ident, export_ident, component_bytes)
+            (parser::Ident::Interface(import_ident), parser::Ident::Interface(export_ident)) => {
+                self.stub_interface(resolver, import_ident, export_ident, component_bytes)
             }
-            (ItemIdent::Interface(_), ItemIdent::Function(_)) => {
+            (parser::Ident::Interface(_), parser::Ident::Item(_)) => {
                 anyhow::bail!("cannot satisfy interface import with a function")
             }
-            (ItemIdent::Function(_), ItemIdent::Interface(_)) => {
+            (parser::Ident::Item(_), parser::Ident::Interface(_)) => {
                 anyhow::bail!("cannot satisfy function import with an interface")
             }
         }
@@ -159,9 +160,9 @@ impl Runtime {
 
     pub fn stub_interface(
         &mut self,
-        querier: &WorldResolver,
-        import_ident: InterfaceIdent<'_>,
-        export_ident: InterfaceIdent<'_>,
+        resolver: &WorldResolver,
+        import_ident: parser::InterfaceIdent<'_>,
+        export_ident: parser::InterfaceIdent<'_>,
         component_bytes: &[u8],
     ) -> anyhow::Result<()> {
         let component = load_component(&self.engine, component_bytes)?;
@@ -171,7 +172,7 @@ impl Runtime {
         let mut import_instance = root
             .instance(&import_ident.to_string())
             .with_context(|| format!("no imported instance named '{import_ident}' found"))?;
-        let import = querier
+        let import = resolver
             .imported_interface(import_ident)
             .with_context(|| format!("no imported interface named '{import_ident}' found"))?;
         let other = WorldResolver::from_bytes(component_bytes)?;
@@ -194,7 +195,7 @@ impl Runtime {
                     .iter()
                     .zip(&exported_function.params)
                 {
-                    if !types_equal(querier, p1, &other, p2) {
+                    if !types_equal(resolver, p1, &other, p2) {
                         anyhow::bail!(
                             "different types for arg '{arg_name}' in function '{fun_name}'"
                         )
@@ -211,13 +212,13 @@ impl Runtime {
                             .collect::<HashMap<&String, &wit_parser::Type>>();
                         for (name, ty) in is {
                             let e = es.get(name).with_context(|| format!("exported function '{fun_name}' does not have return value '{name}'"))?;
-                            if !types_equal(querier, ty, &other, e) {
+                            if !types_equal(resolver, ty, &other, e) {
                                 anyhow::bail!("return value '{name}' has differing types");
                             }
                         }
                     }
                     (wit_parser::Results::Anon(t1), wit_parser::Results::Anon(t2)) => {
-                        if !types_equal(querier, t1, &other, t2) {
+                        if !types_equal(resolver, t1, &other, t2) {
                             anyhow::bail!("return types did not match for function {fun_name}");
                         }
                     }
@@ -254,13 +255,13 @@ impl Runtime {
 
     pub fn stub_function(
         &mut self,
-        querier: &WorldResolver,
-        import_ident: FunctionIdent<'_>,
-        export_ident: FunctionIdent<'_>,
+        resolver: &WorldResolver,
+        import_ident: parser::ItemIdent<'_>,
+        export_ident: parser::ItemIdent<'_>,
         component_bytes: &[u8],
     ) -> anyhow::Result<()> {
         // type checking
-        let import = querier
+        let import = resolver
             .imported_function(import_ident)
             .with_context(|| format!("no import with name '{import_ident}'"))?;
         let other = WorldResolver::from_bytes(component_bytes)?;
@@ -286,15 +287,15 @@ impl Runtime {
                     let mut instance = export
                         .instance(&interface.to_string())
                         .with_context(|| format!("no export named '{interface} found'"))?;
-                    instance.func(&export_ident.function)
+                    instance.func(&export_ident.item)
                 }
-                None => export_instance.get_func(&mut *store_lock, &export_ident.function),
+                None => export_instance.get_func(&mut *store_lock, &export_ident.item),
             }
         }
         .with_context(|| format!("no function found named '{export_ident}'"))?;
 
         let store = self.import_impls.store.clone();
-        let name = import_ident.function.as_str().to_owned();
+        let name = import_ident.item.to_owned();
         match import_ident.interface {
             Some(interface) => {
                 let mut instance = self
@@ -501,29 +502,29 @@ impl WasiView for ImportImplsContext {
 }
 
 fn types_equal(
-    querier1: &WorldResolver,
+    resolver1: &WorldResolver,
     t1: &wit_parser::Type,
-    querier2: &WorldResolver,
+    resolver2: &WorldResolver,
     t2: &wit_parser::Type,
 ) -> bool {
     match (t1, t2) {
         (wit_parser::Type::Id(t1), wit_parser::Type::Id(t2)) => {
-            let t1 = querier1.type_by_id(*t1).unwrap();
-            let t2 = querier2.type_by_id(*t2).unwrap();
-            type_defs_equal(querier1, &t1.kind, querier2, &t2.kind)
+            let t1 = resolver1.type_by_id(*t1).unwrap();
+            let t2 = resolver2.type_by_id(*t2).unwrap();
+            type_defs_equal(resolver1, &t1.kind, resolver2, &t2.kind)
         }
         (wit_parser::Type::Id(t1), t2) => {
-            let t1 = querier1.type_by_id(*t1).unwrap();
+            let t1 = resolver1.type_by_id(*t1).unwrap();
             if let wit_parser::TypeDefKind::Type(t1) = &t1.kind {
-                types_equal(querier1, t1, querier2, t2)
+                types_equal(resolver1, t1, resolver2, t2)
             } else {
                 false
             }
         }
         (t1, wit_parser::Type::Id(t2)) => {
-            let t2 = querier1.type_by_id(*t2).unwrap();
+            let t2 = resolver1.type_by_id(*t2).unwrap();
             if let wit_parser::TypeDefKind::Type(t2) = &t2.kind {
-                types_equal(querier1, t1, querier2, t2)
+                types_equal(resolver1, t1, resolver2, t2)
             } else {
                 false
             }
@@ -533,27 +534,27 @@ fn types_equal(
 }
 
 fn type_defs_equal(
-    querier1: &WorldResolver,
+    resolver1: &WorldResolver,
     t1: &wit_parser::TypeDefKind,
-    querier2: &WorldResolver,
+    resolver2: &WorldResolver,
     t2: &wit_parser::TypeDefKind,
 ) -> bool {
     match (t1, t2) {
         (wit_parser::TypeDefKind::Result(r1), wit_parser::TypeDefKind::Result(r2)) => {
             let oks = match (&r1.ok, &r2.ok) {
                 (None, None) => true,
-                (Some(t1), Some(t2)) => types_equal(querier1, t1, querier2, t2),
+                (Some(t1), Some(t2)) => types_equal(resolver1, t1, resolver2, t2),
                 _ => false,
             };
             let errs = match (&r1.err, &r2.err) {
                 (None, None) => true,
-                (Some(t1), Some(t2)) => types_equal(querier1, t1, querier2, t2),
+                (Some(t1), Some(t2)) => types_equal(resolver1, t1, resolver2, t2),
                 _ => false,
             };
             oks && errs
         }
         (wit_parser::TypeDefKind::List(t1), wit_parser::TypeDefKind::List(t2)) => {
-            types_equal(querier1, t1, querier2, t2)
+            types_equal(resolver1, t1, resolver2, t2)
         }
         (wit_parser::TypeDefKind::Variant(v1), wit_parser::TypeDefKind::Variant(v2)) => {
             if v1.cases.len() != v2.cases.len() {
@@ -561,7 +562,7 @@ fn type_defs_equal(
             }
             v1.cases.iter().zip(v2.cases.iter()).all(|(c1, c2)| {
                 let types_equal = match (&c1.ty, &c2.ty) {
-                    (Some(t1), Some(t2)) => types_equal(querier1, t1, querier2, t2),
+                    (Some(t1), Some(t2)) => types_equal(resolver1, t1, resolver2, t2),
                     (None, None) => true,
                     _ => false,
                 };

@@ -28,8 +28,8 @@ fn _main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
     let component_bytes = std::fs::read(cli.component)?;
-    let mut querier = wit::WorldResolver::from_bytes(&component_bytes)?;
-    let mut runtime = runtime::Runtime::init(component_bytes, &querier, |import_name| {
+    let mut resolver = wit::WorldResolver::from_bytes(&component_bytes)?;
+    let mut runtime = runtime::Runtime::init(component_bytes, &resolver, |import_name| {
         print_error_prefix();
         eprintln!("unimplemented import: {import_name}");
     })?;
@@ -38,7 +38,7 @@ fn _main() -> anyhow::Result<()> {
     if let Some(home) = home::home_dir() {
         let _ = rl.load_history(&home.join(".weplhistory"));
     }
-    let world = querier.world_name();
+    let world = resolver.world_name();
     println!("{}: {world}", "World".blue().bold());
     let mut scope = HashMap::default();
     let prompt = "> ".blue().bold().to_string();
@@ -50,7 +50,7 @@ fn _main() -> anyhow::Result<()> {
                 let line = command::Cmd::parse(&line);
                 match line {
                     Ok(Some(cmd)) => {
-                        match cmd.run(&mut runtime, &mut querier, &mut scope) {
+                        match cmd.run(&mut runtime, &mut resolver, &mut scope) {
                             Err(e) => {
                                 print_error_prefix();
                                 eprintln!("{e}");
