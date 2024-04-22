@@ -23,6 +23,6 @@ tokio = { version = "1.36.0", features = ["macros"] }
 
 wasmtime = { version = "19.0.2", features = ["component-model"] }
 wasmtime-wasi = { version = "19.0.2" }
-wit-component = "0.201.0"
-wit-parser = "0.201.0"
-wasm-compose = "0.201.0"
+wit-component = "0.205.0"
+wit-parser = "0.205.0"
+wasm-compose = "0.205.0"

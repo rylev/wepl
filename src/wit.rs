@@ -127,8 +127,8 @@ impl WorldResolver {
             wit_parser::Type::S16 => "s16",
             wit_parser::Type::S32 => "s32",
             wit_parser::Type::S64 => "s64",
-            wit_parser::Type::Float32 => "float32",
-            wit_parser::Type::Float64 => "float64",
+            wit_parser::Type::F32 => "f32",
+            wit_parser::Type::F64 => "f64",
             wit_parser::Type::String => "string",
             wit_parser::Type::Char => "char",
             wit_parser::Type::Id(id) => {
