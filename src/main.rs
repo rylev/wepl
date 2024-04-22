@@ -102,7 +102,7 @@ fn print_prefix(prefix: &str, color: colored::Color) {
     let _ = stderr.flush();
 }
 
-/// Simple program to greet a person
+/// The WebAssembly Component repl.
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Cli {
