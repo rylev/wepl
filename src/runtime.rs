@@ -9,7 +9,7 @@ use wasmtime::{
     component::{Component, Func, Instance, Linker, ResourceTable, Val},
     Config, Engine, Store,
 };
-use wasmtime_wasi::preview2::{
+use wasmtime_wasi::{
     HostOutputStream, Stdout, StdoutStream, StreamResult, Subscribe, WasiCtx, WasiCtxBuilder,
     WasiView,
 };
@@ -42,7 +42,7 @@ impl Runtime {
         let imports_wasi_cli = resolver.imports_wasi_cli();
         if imports_wasi_cli {
             log::debug!("Linking with wasi");
-            wasmtime_wasi::preview2::command::sync::add_to_linker(&mut linker)?;
+            wasmtime_wasi::command::sync::add_to_linker(&mut linker)?;
         }
         for (import_name, import) in resolver.imports(!imports_wasi_cli) {
             let import_name = resolver.world_item_name(import_name);
@@ -167,7 +167,7 @@ impl Runtime {
     ) -> anyhow::Result<()> {
         let component = load_component(&self.engine, component_bytes)?;
         let mut linker = Linker::<ImportImplsContext>::new(&self.engine);
-        wasmtime_wasi::preview2::command::sync::add_to_linker(&mut linker)?;
+        wasmtime_wasi::command::sync::add_to_linker(&mut linker)?;
         let mut root = self.linker.root();
         let mut import_instance = root
             .instance(&import_ident.to_string())
@@ -277,7 +277,7 @@ impl Runtime {
 
         let component = load_component(&self.engine, component_bytes)?;
         let mut linker = Linker::<ImportImplsContext>::new(&self.engine);
-        wasmtime_wasi::preview2::command::sync::add_to_linker(&mut linker)?;
+        wasmtime_wasi::command::sync::add_to_linker(&mut linker)?;
         let export_func = {
             let mut store_lock = self.import_impls.store.lock().unwrap();
             let export_instance = linker.instantiate(&mut *store_lock, &component)?;
