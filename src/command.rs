@@ -393,7 +393,14 @@ fn val_as_type(val: &Val) -> Cow<'static, str> {
                 "list<type-unknown-because-list-was-empty>".into()
             }
         }
-        Val::Record(_) => "record".into(),
+        Val::Record(r) => {
+            let field_types = r
+                .iter()
+                .map(|(key, value)| format!("{}: {}", key, val_as_type(value)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("record{{ {field_types} }}").into()
+        }
         Val::Tuple(t) => {
             let item_types = t
                 .iter()
