@@ -1,6 +1,7 @@
 pub mod parser;
 mod tokenizer;
 use std::collections::HashMap;
+use std::borrow::Cow;
 
 use anyhow::{bail, Context as _};
 use colored::Colorize;
@@ -357,29 +358,39 @@ fn format_val(val: &Val) -> String {
     }
 }
 
-fn val_as_type(val: &Val) -> &'static str {
+fn val_as_type(val: &Val) -> Cow<'static, str> {
     match val {
-        Val::String(_) => "string",
-        Val::Bool(_) => "bool",
-        Val::U8(_) => "u8",
-        Val::U16(_) => "u16",
-        Val::U32(_) => "u32",
-        Val::U64(_) => "u64",
-        Val::S8(_) => "s8",
-        Val::S16(_) => "s16",
-        Val::S32(_) => "s32",
-        Val::S64(_) => "s64",
-        Val::Float32(_) => "float32",
-        Val::Float64(_) => "float64",
-        Val::Char(_) => "char",
-        Val::Option(_) => "option",
-        Val::Result(_) => "result",
-        Val::List(_) => "list",
-        Val::Record(_) => "record",
-        Val::Tuple(_) => todo!(),
-        Val::Variant(..) => todo!(),
-        Val::Enum(_) => todo!(),
-        Val::Flags(_) => todo!(),
-        Val::Resource(_) => todo!(),
+        Val::String(_) => "string".into(),
+        Val::Bool(_) => "bool".into(),
+        Val::U8(_) => "u8".into(),
+        Val::U16(_) => "u16".into(),
+        Val::U32(_) => "u32".into(),
+        Val::U64(_) => "u64".into(),
+        Val::S8(_) => "s8".into(),
+        Val::S16(_) => "s16".into(),
+        Val::S32(_) => "s32".into(),
+        Val::S64(_) => "s64".into(),
+        Val::Float32(_) => "float32".into(),
+        Val::Float64(_) => "float64".into(),
+        Val::Char(_) => "char".into(),
+        Val::Option(t) => if let Some(t) = t {
+                format!("option({})", val_as_type(t)).into()
+            } else {
+                "option(type-unknown-because-variant-was-none)".into()
+            },
+        Val::Result(_) => "result".into(),
+        Val::List(t) => {
+            if ! t.is_empty() {
+                format!("list({})", val_as_type(&t[0])).into()
+            } else {
+                "list(type-unknown-because-list-was-empty)".into()
+            }
+        }
+        Val::Record(_) => "record".into(),
+        Val::Tuple(_) => "tuple".into(),
+        Val::Variant(..) => "variant_specific".into(),
+        Val::Enum(_) => "enum_type".into(),
+        Val::Flags(_) => "flags".into(),
+        Val::Resource(_) => "resource_{}".into(),
     }
 }
