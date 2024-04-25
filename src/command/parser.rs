@@ -235,6 +235,7 @@ impl<'a> FunctionCall<'a> {
             if input.front().map(|t| t.token()) != Some(TokenKind::Comma) {
                 break;
             }
+            input.pop_front();
         }
         expect_token(input, |t| t == TokenKind::ClosedParen)?;
         Ok(Some(FunctionCall {
