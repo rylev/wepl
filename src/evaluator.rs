@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use anyhow::{bail, Context};
-use wasmtime::component::{self, List, Record, Val};
+use wasmtime::component::{self, Val};
 
 use crate::{command::parser, runtime::Runtime, wit::WorldResolver};
 
@@ -47,19 +47,19 @@ impl<'a> Evaluator<'a> {
                         if ident.interface.is_none() && ident.item == "some" && args.len() == 1 =>
                     {
                         let val = self.eval(args.remove(0), Some(&o.ty()))?;
-                        return o.new_val(Some(val));
+                        return Ok(val);
                     }
                     Some(component::Type::Result(r)) if args.len() == 1 => {
                         if let Some(ok) = r.ok() {
                             if ident.interface.is_none() && ident.item == "ok" {
                                 let val = self.eval(args.remove(0), Some(&ok))?;
-                                return r.new_val(Ok(Some(val)));
+                                return Ok(val);
                             }
                         }
                         if let Some(err) = r.err() {
                             if ident.interface.is_none() && ident.item == "err" {
                                 let val = self.eval(args.remove(0), Some(&err))?;
-                                return r.new_val(Err(Some(val)));
+                                return Ok(Val::Result(Err(Some(Box::new(val)))));
                             }
                         }
                     }
@@ -126,7 +126,7 @@ impl<'a> Evaluator<'a> {
                         for item in list.items {
                             values.push(self.eval(item, Some(&l.ty()))?)
                         }
-                        Ok(Val::List(List::new(&l, values.into_boxed_slice())?))
+                        Ok(Val::List(values))
                     }
                     Some(component::Type::Option(o)) => match o.ty() {
                         component::Type::List(l) => {
@@ -134,10 +134,12 @@ impl<'a> Evaluator<'a> {
                             for item in list.items {
                                 values.push(self.eval(item, Some(&l.ty()))?)
                             }
-                            Ok(Val::Option(component::OptionVal::new(
-                                o,
-                                Some(Val::List(List::new(&l, values.into_boxed_slice())?)),
-                            )?))
+                            let o = match values.len() {
+                                0 => None,
+                                1 => values.pop().map(Box::new),
+                                _ => todo!("should this be unreachable, or other logic to create this option?"),
+                            };
+                            Ok(Val::Option(o))
                         }
                         t => bail!(
                             "type error - required option<{}> found = list",
@@ -177,18 +179,21 @@ impl<'a> Evaluator<'a> {
                     .sort_by(|(f1, _), (f2, _)| types.get(f1).unwrap().cmp(types.get(f2).unwrap()));
 
                 for ((name, field_expr), field_type) in r.fields.into_iter().zip(ty.fields()) {
-                    values.push((name, self.eval(field_expr, Some(&field_type.ty))?));
+                    values.push((name.to_string(), self.eval(field_expr, Some(&field_type.ty))?));
                 }
-                Ok(Val::Record(Record::new(ty, values)?))
+                //Ok(Val::Record(Record::new(ty, values)?))
+                Ok(Val::Record(values))
             }
             parser::Literal::String(s) => {
                 let val = Val::String(s.to_owned().into());
                 match type_hint {
-                    Some(component::Type::Result(r)) => r.new_val(match (r.ok(), r.err()) {
-                        (Some(_), _) => Ok(Some(val)),
-                        (_, Some(_)) => Err(Some(val)),
-                        (None, None) => return Ok(val),
-                    }),
+                    Some(component::Type::Result(r)) => {
+                        Ok(Val::Result( match (r.ok(), r.err()) {
+                            (Some(_), _) => Ok(Some(Box::new(val))),
+                            (_, Some(_)) => Err(Some(Box::new(val))),
+                            (None, None) => return Ok(val),
+                        }))
+                    },
                     _ => Ok(val),
                 }
             }
@@ -209,21 +214,22 @@ impl<'a> Evaluator<'a> {
             Some(t) => match t {
                 component::Type::Bool if ident == "true" => Ok(Val::Bool(true)),
                 component::Type::Bool if ident == "false" => Ok(Val::Bool(false)),
-                component::Type::Enum(e) => e.new_val(ident),
-                component::Type::Variant(v) => match self.lookup_in_scope(ident) {
+                component::Type::Enum(_e) => Ok(Val::Enum(ident.to_string())), // TODO (fsr): should _e be used in building the String?
+                component::Type::Variant(_) => match self.lookup_in_scope(ident) {
                     Ok(v) => Ok(v),
-                    Err(_) => v.new_val(ident, None),
+                    Err(_) => Ok(Val::Variant(ident.to_string(), None)),
+
                 },
-                component::Type::Option(o) if ident == "none" => o.new_val(None),
+                component::Type::Option(_) if ident == "none" => Ok(Val::Option(None)),
                 component::Type::Option(o) => {
-                    o.new_val(Some(self.resolve_ident(ident, Some(&o.ty()))?))
+                    Ok(Val::Option(Some(Box::new(self.resolve_ident(ident, Some(&o.ty()))?))))
                 }
-                component::Type::Result(r) => r.new_val(match (r.ok(), r.err()) {
-                    (Some(o), _) => Ok(Some(self.resolve_ident(ident, Some(&o))?)),
+                component::Type::Result(r) => Ok(Val::Result(match (r.ok(), r.err()) {
+                    (Some(o), _) => Ok(Some(Box::new(self.resolve_ident(ident, Some(&o))?))),
                     (None, None) if ident == "ok" => Ok(None),
                     (None, None) if ident == "err" => Err(None),
                     _ => return self.lookup_in_scope(ident),
-                }),
+                })),
                 component::Type::Bool
                 | component::Type::U8
                 | component::Type::U16

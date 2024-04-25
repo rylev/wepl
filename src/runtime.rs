@@ -42,7 +42,7 @@ impl Runtime {
         let imports_wasi_cli = resolver.imports_wasi_cli();
         if imports_wasi_cli {
             log::debug!("Linking with wasi");
-            wasmtime_wasi::command::sync::add_to_linker(&mut linker)?;
+            wasmtime_wasi::add_to_linker_sync(&mut linker)?;
         }
         for (import_name, import) in resolver.imports(!imports_wasi_cli) {
             let import_name = resolver.world_item_name(import_name);
@@ -51,7 +51,7 @@ impl Runtime {
                 wit_parser::WorldItem::Function(f) => {
                     linker
                         .root()
-                        .func_new(&component, &f.name, move |_ctx, _args, _rets| {
+                        .func_new(&f.name, move |_ctx, _args, _rets| {
                             stub_import(&import_name);
                             Ok(())
                         })?;
@@ -63,7 +63,7 @@ impl Runtime {
                     for (_, f) in interface.functions.iter() {
                         let stub_import = stub_import.clone();
                         let import_name = import_name.clone();
-                        instance.func_new(&component, &f.name, move |_ctx, _args, _rets| {
+                        instance.func_new(&f.name, move |_ctx, _args, _rets| {
                             stub_import(&import_name);
                             Ok(())
                         })?;
@@ -167,7 +167,7 @@ impl Runtime {
     ) -> anyhow::Result<()> {
         let component = load_component(&self.engine, component_bytes)?;
         let mut linker = Linker::<ImportImplsContext>::new(&self.engine);
-        wasmtime_wasi::command::sync::add_to_linker(&mut linker)?;
+        wasmtime_wasi::add_to_linker_sync(&mut linker)?;
         let mut root = self.linker.root();
         let mut import_instance = root
             .instance(&import_ident.to_string())
@@ -238,7 +238,6 @@ impl Runtime {
                         .with_context(|| format!("no exported function named '{fun_name}' found"))?
                 };
                 import_instance.func_new(
-                    &self.component.0,
                     &fun_name,
                     move |_ctx, args, results| {
                         let mut store = store.lock().unwrap();
@@ -277,7 +276,7 @@ impl Runtime {
 
         let component = load_component(&self.engine, component_bytes)?;
         let mut linker = Linker::<ImportImplsContext>::new(&self.engine);
-        wasmtime_wasi::command::sync::add_to_linker(&mut linker)?;
+        wasmtime_wasi::add_to_linker_sync(&mut linker)?;
         let export_func = {
             let mut store_lock = self.import_impls.store.lock().unwrap();
             let export_instance = linker.instantiate(&mut *store_lock, &component)?;
@@ -302,7 +301,7 @@ impl Runtime {
                     .linker
                     .instance(&interface.to_string())
                     .with_context(|| format!("no interface named '{interface}' found"))?;
-                instance.func_new(&self.component.0, &name, move |_ctx, args, results| {
+                instance.func_new(&name, move |_ctx, args, results| {
                     let mut store = store.lock().unwrap();
                     export_func.call(&mut *store, args, results)?;
                     export_func.post_return(&mut *store)?;
@@ -311,7 +310,6 @@ impl Runtime {
             }
             None => {
                 self.linker.root().func_new(
-                    &self.component.0,
                     &name,
                     move |_ctx, args, results| {
                         let mut store = store.lock().unwrap();

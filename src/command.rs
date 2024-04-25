@@ -323,11 +323,11 @@ fn format_val(val: &Val) -> String {
         Val::Float32(f) => f.to_string(),
         Val::Float64(f) => f.to_string(),
         Val::Char(c) => c.to_string(),
-        Val::Option(o) => match o.value() {
+        Val::Option(o) => match o {
             Some(o) => format!("some({})", format_val(o)),
             None => "none".into(),
         },
-        Val::Result(r) => match r.value() {
+        Val::Result(r) => match r {
             Ok(Some(o)) => format!("ok({})", format_val(o)),
             Ok(None) => "ok".to_string(),
             Err(Some(e)) => format!("err({})", format_val(e)),
@@ -343,14 +343,14 @@ fn format_val(val: &Val) -> String {
         }
         Val::Record(r) => {
             let fields = r
-                .fields()
+                .iter()
                 .map(|(key, value)| format!("{}: {}", key, format_val(value)))
                 .collect::<Vec<_>>()
                 .join(", ");
             format!("{{ {fields} }}")
         }
         Val::Tuple(_) => todo!(),
-        Val::Variant(_) => todo!(),
+        Val::Variant(..) => todo!(),
         Val::Enum(_) => todo!(),
         Val::Flags(_) => todo!(),
         Val::Resource(_) => todo!(),
@@ -377,7 +377,7 @@ fn val_as_type(val: &Val) -> &'static str {
         Val::List(_) => "list",
         Val::Record(_) => "record",
         Val::Tuple(_) => todo!(),
-        Val::Variant(_) => todo!(),
+        Val::Variant(..) => todo!(),
         Val::Enum(_) => todo!(),
         Val::Flags(_) => todo!(),
         Val::Resource(_) => todo!(),
