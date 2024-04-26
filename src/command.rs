@@ -337,7 +337,7 @@ fn format_val(val: &Val) -> String {
         Val::List(l) => {
             let items = l
                 .iter()
-                .map(|value| format!("{}", format_val(value)))
+                .map(|value| format_val(value).to_string())
                 .collect::<Vec<_>>()
                 .join(", ");
             format!("[{items}]")
@@ -412,6 +412,6 @@ fn val_as_type(val: &Val) -> Cow<'static, str> {
         Val::Variant(..) => "variant_specific".into(),
         Val::Enum(_) => "enum_type".into(),
         Val::Flags(_) => "flags".into(),
-        Val::Resource(_) => "resource_{}".into(),
+        Val::Resource(_) => "resource".into(),
     }
 }
