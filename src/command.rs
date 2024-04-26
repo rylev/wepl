@@ -385,7 +385,12 @@ fn val_as_type(val: &Val) -> Cow<'static, str> {
             } else {
                 "option<type-unknown-because-variant-was-none>".into()
             },
-        Val::Result(_) => "result".into(),
+        Val::Result(r) => match r {
+            Ok(Some(o)) => format!("Result<ok<{}>>", val_as_type(o)).into(),
+            Ok(None) => "Result<ok>".into(),
+            Err(Some(e)) => format!("Result<err<{}>>", val_as_type(e)).into(),
+            Err(None) => "Result<err>".into(),
+        },
         Val::List(t) => {
             if ! t.is_empty() {
                 format!("list<{}>", val_as_type(&t[0])).into()
