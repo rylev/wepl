@@ -181,7 +181,6 @@ impl<'a> Evaluator<'a> {
                 for ((name, field_expr), field_type) in r.fields.into_iter().zip(ty.fields()) {
                     values.push((name.to_string(), self.eval(field_expr, Some(&field_type.ty))?));
                 }
-                //Ok(Val::Record(Record::new(ty, values)?))
                 Ok(Val::Record(values))
             }
             parser::Literal::String(s) => {
@@ -214,7 +213,7 @@ impl<'a> Evaluator<'a> {
             Some(t) => match t {
                 component::Type::Bool if ident == "true" => Ok(Val::Bool(true)),
                 component::Type::Bool if ident == "false" => Ok(Val::Bool(false)),
-                component::Type::Enum(_e) => Ok(Val::Enum(ident.to_string())), // TODO (fsr): should _e be used in building the String?
+                component::Type::Enum(_e) => Ok(Val::Enum(ident.to_string())),
                 component::Type::Variant(_) => match self.lookup_in_scope(ident) {
                     Ok(v) => Ok(v),
                     Err(_) => Ok(Val::Variant(ident.to_string(), None)),
