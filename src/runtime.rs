@@ -49,12 +49,10 @@ impl Runtime {
             let stub_import = stub_import.clone();
             match import {
                 wit_parser::WorldItem::Function(f) => {
-                    linker
-                        .root()
-                        .func_new(&f.name, move |_ctx, _args, _rets| {
-                            stub_import(&import_name);
-                            Ok(())
-                        })?;
+                    linker.root().func_new(&f.name, move |_ctx, _args, _rets| {
+                        stub_import(&import_name);
+                        Ok(())
+                    })?;
                 }
                 wit_parser::WorldItem::Interface(i) => {
                     let interface = resolver.interface_by_id(*i).unwrap();
@@ -237,15 +235,12 @@ impl Runtime {
                         .func(&fun_name)
                         .with_context(|| format!("no exported function named '{fun_name}' found"))?
                 };
-                import_instance.func_new(
-                    &fun_name,
-                    move |_ctx, args, results| {
-                        let mut store = store.lock().unwrap();
-                        export_func.call(&mut *store, args, results)?;
-                        export_func.post_return(&mut *store)?;
-                        Ok(())
-                    },
-                )?;
+                import_instance.func_new(&fun_name, move |_ctx, args, results| {
+                    let mut store = store.lock().unwrap();
+                    export_func.call(&mut *store, args, results)?;
+                    export_func.post_return(&mut *store)?;
+                    Ok(())
+                })?;
             }
         }
         self.refresh()?;
@@ -309,15 +304,14 @@ impl Runtime {
                 })?;
             }
             None => {
-                self.linker.root().func_new(
-                    &name,
-                    move |_ctx, args, results| {
+                self.linker
+                    .root()
+                    .func_new(&name, move |_ctx, args, results| {
                         let mut store = store.lock().unwrap();
                         export_func.call(&mut *store, args, results)?;
                         export_func.post_return(&mut *store)?;
                         Ok(())
-                    },
-                )?;
+                    })?;
             }
         }
         self.refresh()?;

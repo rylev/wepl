@@ -1,7 +1,7 @@
 pub mod parser;
 mod tokenizer;
-use std::collections::HashMap;
 use std::borrow::Cow;
+use std::collections::HashMap;
 
 use anyhow::{bail, Context as _};
 use colored::Colorize;
@@ -351,13 +351,9 @@ fn format_val(val: &Val) -> String {
             format!("{{ {fields} }}")
         }
         Val::Tuple(t) => {
-            let items = t
-                .iter()
-                .map(format_val)
-                .collect::<Vec<_>>()
-                .join(", ");
+            let items = t.iter().map(format_val).collect::<Vec<_>>().join(", ");
             format!("({items})")
-        },
+        }
         Val::Variant(..) => todo!(),
         Val::Enum(_) => todo!(),
         Val::Flags(_) => todo!(),
@@ -380,11 +376,13 @@ fn val_as_type(val: &Val) -> Cow<'static, str> {
         Val::Float32(_) => "float32".into(),
         Val::Float64(_) => "float64".into(),
         Val::Char(_) => "char".into(),
-        Val::Option(t) => if let Some(t) = t {
+        Val::Option(t) => {
+            if let Some(t) = t {
                 format!("option<{}>", val_as_type(t)).into()
             } else {
                 "option<type-unknown-because-variant-was-none>".into()
-            },
+            }
+        }
         Val::Result(r) => match r {
             Ok(Some(o)) => format!("Result<ok<{}>>", val_as_type(o)).into(),
             Ok(None) => "Result<ok>".into(),
@@ -392,7 +390,7 @@ fn val_as_type(val: &Val) -> Cow<'static, str> {
             Err(None) => "Result<err>".into(),
         },
         Val::List(t) => {
-            if ! t.is_empty() {
+            if !t.is_empty() {
                 format!("list<{}>", val_as_type(&t[0])).into()
             } else {
                 "list<type-unknown-because-list-was-empty>".into()
@@ -407,13 +405,9 @@ fn val_as_type(val: &Val) -> Cow<'static, str> {
             format!("record{{ {field_types} }}").into()
         }
         Val::Tuple(t) => {
-            let item_types = t
-                .iter()
-                .map(val_as_type)
-                .collect::<Vec<_>>()
-                .join(", ");
+            let item_types = t.iter().map(val_as_type).collect::<Vec<_>>().join(", ");
             format!("tuple<{item_types}>").into()
-        },
+        }
         Val::Variant(..) => "variant_specific".into(),
         Val::Enum(_) => "enum_type".into(),
         Val::Flags(_) => "flags".into(),

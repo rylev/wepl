@@ -179,20 +179,21 @@ impl<'a> Evaluator<'a> {
                     .sort_by(|(f1, _), (f2, _)| types.get(f1).unwrap().cmp(types.get(f2).unwrap()));
 
                 for ((name, field_expr), field_type) in r.fields.into_iter().zip(ty.fields()) {
-                    values.push((name.to_string(), self.eval(field_expr, Some(&field_type.ty))?));
+                    values.push((
+                        name.to_string(),
+                        self.eval(field_expr, Some(&field_type.ty))?,
+                    ));
                 }
                 Ok(Val::Record(values))
             }
             parser::Literal::String(s) => {
                 let val = Val::String(s.to_owned().into());
                 match type_hint {
-                    Some(component::Type::Result(r)) => {
-                        Ok(Val::Result( match (r.ok(), r.err()) {
-                            (Some(_), _) => Ok(Some(Box::new(val))),
-                            (_, Some(_)) => Err(Some(Box::new(val))),
-                            (None, None) => return Ok(val),
-                        }))
-                    },
+                    Some(component::Type::Result(r)) => Ok(Val::Result(match (r.ok(), r.err()) {
+                        (Some(_), _) => Ok(Some(Box::new(val))),
+                        (_, Some(_)) => Err(Some(Box::new(val))),
+                        (None, None) => return Ok(val),
+                    })),
                     _ => Ok(val),
                 }
             }
@@ -217,12 +218,11 @@ impl<'a> Evaluator<'a> {
                 component::Type::Variant(_) => match self.lookup_in_scope(ident) {
                     Ok(v) => Ok(v),
                     Err(_) => Ok(Val::Variant(ident.to_string(), None)),
-
                 },
                 component::Type::Option(_) if ident == "none" => Ok(Val::Option(None)),
-                component::Type::Option(o) => {
-                    Ok(Val::Option(Some(Box::new(self.resolve_ident(ident, Some(&o.ty()))?))))
-                }
+                component::Type::Option(o) => Ok(Val::Option(Some(Box::new(
+                    self.resolve_ident(ident, Some(&o.ty()))?,
+                )))),
                 component::Type::Result(r) => Ok(Val::Result(match (r.ok(), r.err()) {
                     (Some(o), _) => Ok(Some(Box::new(self.resolve_ident(ident, Some(&o))?))),
                     (None, None) if ident == "ok" => Ok(None),
