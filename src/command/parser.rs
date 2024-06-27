@@ -148,10 +148,11 @@ impl<'a> Expr<'a> {
                         }
                     }
                 }
-                return Err(ParserError::UnexpectedEndOfInput);
+                Err(ParserError::UnexpectedEndOfInput)
             }
             TokenKind::OpenBrace => {
                 input.pop_front();
+                #[allow(clippy::enum_variant_names)]
                 enum State<'a> {
                     ExpectIdent,
                     ExpectColon(&'a str),
@@ -190,7 +191,7 @@ impl<'a> Expr<'a> {
                         _ => return Err(ParserError::UnexpectedToken(*token)),
                     }
                 }
-                return Err(ParserError::UnexpectedEndOfInput);
+                Err(ParserError::UnexpectedEndOfInput)
             }
             TokenKind::Ident(_) => {
                 let func = FunctionCall::try_parse(input)?;
@@ -200,7 +201,7 @@ impl<'a> Expr<'a> {
                 }
             }
 
-            _ => return Ok(None),
+            _ => Ok(None),
         }
     }
 }
@@ -341,6 +342,7 @@ pub struct InterfaceIdent<'a> {
 impl<'a> InterfaceIdent<'a> {
     fn try_parse<'b>(input: &'b mut VecDeque<Token<'a>>) -> Result<Option<Self>, ParserError<'a>> {
         #[derive(Debug)]
+        #[allow(clippy::enum_variant_names)]
         enum State<'a> {
             ExpectFirst,
             ExpectColon(&'a str),

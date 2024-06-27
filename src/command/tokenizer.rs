@@ -177,7 +177,7 @@ impl Deref for SpannedStr<'_> {
     type Target = str;
 
     fn deref(&self) -> &Self::Target {
-        &self.str
+        self.str
     }
 }
 

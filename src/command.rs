@@ -71,7 +71,7 @@ impl<'a> Cmd<'a> {
                         "{}",
                         results
                             .into_iter()
-                            .map(|v| format!("{}", format_val(&v)))
+                            .map(|v| format_val(&v))
                             .collect::<Vec<_>>()
                             .join("\n")
                     )
@@ -165,7 +165,7 @@ impl<'a> Cmd<'a> {
                     bail!("unrecognized token {}", token.input.str);
                 };
                 let adapter =
-                    std::fs::read(&*path).context("could not read path to adapter module")?;
+                    std::fs::read(path).context("could not read path to adapter module")?;
                 runtime.compose(&adapter)?;
                 *resolver = WorldResolver::from_bytes(runtime.component_bytes())?;
             }
@@ -183,7 +183,7 @@ impl<'a> Cmd<'a> {
                 };
                 let component_bytes = std::fs::read(component)
                     .with_context(|| format!("could not read component '{component}'"))?;
-                runtime.stub(&resolver, import_ident, export_ident, &component_bytes)?;
+                runtime.stub(resolver, import_ident, export_ident, &component_bytes)?;
             }
             Cmd::BuiltIn {
                 name: "inspect",
@@ -252,7 +252,7 @@ There are also builtin functions that can be called with a preceding '.'. Suppor
 fn format_world_item(item: &wit_parser::WorldItem, resolver: &WorldResolver) -> Option<String> {
     match item {
         wit_parser::WorldItem::Function(f) => Some(format_function(f, resolver)),
-        wit_parser::WorldItem::Interface(id) => {
+        wit_parser::WorldItem::Interface { id, .. } => {
             let interface = resolver.interface_by_id(*id).unwrap();
             if interface.functions.is_empty() {
                 return None;
@@ -323,34 +323,30 @@ fn format_val(val: &Val) -> String {
         Val::Float32(f) => f.to_string(),
         Val::Float64(f) => f.to_string(),
         Val::Char(c) => c.to_string(),
-        Val::Option(o) => match o.value() {
+        Val::Option(o) => match o {
             Some(o) => format!("some({})", format_val(o)),
             None => "none".into(),
         },
-        Val::Result(r) => match r.value() {
+        Val::Result(r) => match r {
             Ok(Some(o)) => format!("ok({})", format_val(o)),
             Ok(None) => "ok".to_string(),
             Err(Some(e)) => format!("err({})", format_val(e)),
             Err(None) => "err".to_string(),
         },
         Val::List(l) => {
-            let items = l
-                .iter()
-                .map(|value| format!("{}", format_val(value)))
-                .collect::<Vec<_>>()
-                .join(", ");
+            let items = l.iter().map(format_val).collect::<Vec<_>>().join(", ");
             format!("[{items}]")
         }
         Val::Record(r) => {
             let fields = r
-                .fields()
+                .iter()
                 .map(|(key, value)| format!("{}: {}", key, format_val(value)))
                 .collect::<Vec<_>>()
                 .join(", ");
             format!("{{ {fields} }}")
         }
         Val::Tuple(_) => todo!(),
-        Val::Variant(_) => todo!(),
+        Val::Variant(_, _) => todo!(),
         Val::Enum(_) => todo!(),
         Val::Flags(_) => todo!(),
         Val::Resource(_) => todo!(),
@@ -377,7 +373,7 @@ fn val_as_type(val: &Val) -> &'static str {
         Val::List(_) => "list",
         Val::Record(_) => "record",
         Val::Tuple(_) => todo!(),
-        Val::Variant(_) => todo!(),
+        Val::Variant(_, _) => todo!(),
         Val::Enum(_) => todo!(),
         Val::Flags(_) => todo!(),
         Val::Resource(_) => todo!(),

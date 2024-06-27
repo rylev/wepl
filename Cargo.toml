@@ -18,12 +18,12 @@ home = "0.5.9"
 log = "0.4"
 nom = "7.1.3"
 nom_locate = "4.2"
-rustyline = "13.0.0"
-tokio = { version = "1.36.0", features = ["macros"] }
+rustyline = "14.0.0"
+tokio = { version = "1.38", features = ["macros"] }
 
-wasmtime = { version = "18.0.1", features = ["component-model"] }
-wasmtime-wasi = { version = "18.0.2", features = ["tokio"] }
+wasmtime = "22.0"
+wasmtime-wasi = "22.0"
 wasi-virt = { git = "https://github.com/bytecodealliance/WASI-Virt", rev = "fd2fae04342ea58aab2426ca041da68be046b030" }
-wit-component = "0.201.0"
-wit-parser = "0.201.0"
-wasm-compose = "0.201.0"
+wit-component = "0.211"
+wit-parser = "0.211"
+wasm-compose = "0.211"
