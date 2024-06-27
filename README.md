@@ -8,7 +8,9 @@ You can build `wepl` from source by running `cargo build --release` (or `cargo b
 
 ## Installing `wepl`
 
-You can install `wepl` on your local system by running `cargo install --path . --locked`
+You can install `wepl` from crates.io by running `cargo install wepl --locked`.
+
+You can also install `wepl` on your local system by running `cargo install --path . --locked`.
 
 ## Example
 
