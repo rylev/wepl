@@ -9,7 +9,7 @@ use wasmtime::{
     component::{Component, Func, Instance, Linker, ResourceTable, Val},
     Config, Engine, Store,
 };
-use wasmtime_wasi::preview2::{
+use wasmtime_wasi::{
     HostOutputStream, Stdout, StdoutStream, StreamResult, Subscribe, WasiCtx, WasiCtxBuilder,
     WasiView,
 };
@@ -42,40 +42,35 @@ impl Runtime {
         let imports_wasi_cli = resolver.imports_wasi_cli();
         if imports_wasi_cli {
             log::debug!("Linking with wasi");
-            wasmtime_wasi::preview2::command::sync::add_to_linker(&mut linker)?;
+            wasmtime_wasi::add_to_linker_sync(&mut linker)?;
         }
         for (import_name, import) in resolver.imports(!imports_wasi_cli) {
             let import_name = resolver.world_item_name(import_name);
             let stub_import = stub_import.clone();
             match import {
                 wit_parser::WorldItem::Function(f) => {
-                    linker
-                        .root()
-                        .func_new(&component, &f.name, move |_ctx, _args, _rets| {
-                            stub_import(&import_name);
-                            Ok(())
-                        })?;
+                    linker.root().func_new(&f.name, move |_ctx, _args, _rets| {
+                        stub_import(&import_name);
+                        Ok(())
+                    })?;
                 }
-                wit_parser::WorldItem::Interface(i) => {
-                    let interface = resolver.interface_by_id(*i).unwrap();
+                wit_parser::WorldItem::Interface { id, .. } => {
+                    let interface = resolver.interface_by_id(*id).unwrap();
                     let mut root = linker.root();
                     let mut instance = root.instance(&import_name)?;
                     for (_, f) in interface.functions.iter() {
                         let stub_import = stub_import.clone();
                         let import_name = import_name.clone();
-                        instance.func_new(&component, &f.name, move |_ctx, _args, _rets| {
+                        instance.func_new(&f.name, move |_ctx, _args, _rets| {
                             stub_import(&import_name);
                             Ok(())
                         })?;
                     }
                     for (name, t) in &interface.types {
                         let t = resolver.type_by_id(*t).unwrap();
-                        match &t.kind {
-                            wit_parser::TypeDefKind::Resource => {
-                                let ty = wasmtime::component::ResourceType::host::<()>();
-                                instance.resource(name, ty, |_, _| Ok(())).unwrap();
-                            }
-                            _ => {}
+                        if let wit_parser::TypeDefKind::Resource = &t.kind {
+                            let ty = wasmtime::component::ResourceType::host::<()>();
+                            instance.resource(name, ty, |_, _| Ok(())).unwrap();
                         }
                     }
                 }
@@ -108,13 +103,13 @@ impl Runtime {
                     .with_context(|| {
                         format!("could not find exported instance with name '{instance_name}'")
                     })?
-                    .func(&ident.item)
+                    .func(ident.item)
             }
             None => self
                 .instance
                 .exports(&mut self.store)
                 .root()
-                .func(&ident.item),
+                .func(ident.item),
         };
         func.with_context(|| format!("could not find function '{ident}' in instance"))
     }
@@ -167,7 +162,7 @@ impl Runtime {
     ) -> anyhow::Result<()> {
         let component = load_component(&self.engine, component_bytes)?;
         let mut linker = Linker::<ImportImplsContext>::new(&self.engine);
-        wasmtime_wasi::preview2::command::sync::add_to_linker(&mut linker)?;
+        wasmtime_wasi::add_to_linker_sync(&mut linker)?;
         let mut root = self.linker.root();
         let mut import_instance = root
             .instance(&import_ident.to_string())
@@ -207,7 +202,7 @@ impl Runtime {
                             anyhow::bail!("different number of return types")
                         }
                         let es = es
-                            .into_iter()
+                            .iter()
                             .map(|(name, ty)| (name, ty))
                             .collect::<HashMap<&String, &wit_parser::Type>>();
                         for (name, ty) in is {
@@ -234,19 +229,15 @@ impl Runtime {
                             format!("no exported instance named '{export_ident} found'")
                         })?;
                     export_instance
-                        .func(&fun_name)
+                        .func(fun_name)
                         .with_context(|| format!("no exported function named '{fun_name}' found"))?
                 };
-                import_instance.func_new(
-                    &self.component.0,
-                    &fun_name,
-                    move |_ctx, args, results| {
-                        let mut store = store.lock().unwrap();
-                        export_func.call(&mut *store, args, results)?;
-                        export_func.post_return(&mut *store)?;
-                        Ok(())
-                    },
-                )?;
+                import_instance.func_new(fun_name, move |_ctx, args, results| {
+                    let mut store = store.lock().unwrap();
+                    export_func.call(&mut *store, args, results)?;
+                    export_func.post_return(&mut *store)?;
+                    Ok(())
+                })?;
             }
         }
         self.refresh()?;
@@ -277,7 +268,7 @@ impl Runtime {
 
         let component = load_component(&self.engine, component_bytes)?;
         let mut linker = Linker::<ImportImplsContext>::new(&self.engine);
-        wasmtime_wasi::preview2::command::sync::add_to_linker(&mut linker)?;
+        wasmtime_wasi::add_to_linker_sync(&mut linker)?;
         let export_func = {
             let mut store_lock = self.import_impls.store.lock().unwrap();
             let export_instance = linker.instantiate(&mut *store_lock, &component)?;
@@ -287,9 +278,9 @@ impl Runtime {
                     let mut instance = export
                         .instance(&interface.to_string())
                         .with_context(|| format!("no export named '{interface} found'"))?;
-                    instance.func(&export_ident.item)
+                    instance.func(export_ident.item)
                 }
-                None => export_instance.get_func(&mut *store_lock, &export_ident.item),
+                None => export_instance.get_func(&mut *store_lock, export_ident.item),
             }
         }
         .with_context(|| format!("no function found named '{export_ident}'"))?;
@@ -302,7 +293,7 @@ impl Runtime {
                     .linker
                     .instance(&interface.to_string())
                     .with_context(|| format!("no interface named '{interface}' found"))?;
-                instance.func_new(&self.component.0, &name, move |_ctx, args, results| {
+                instance.func_new(&name, move |_ctx, args, results| {
                     let mut store = store.lock().unwrap();
                     export_func.call(&mut *store, args, results)?;
                     export_func.post_return(&mut *store)?;
@@ -310,16 +301,14 @@ impl Runtime {
                 })?;
             }
             None => {
-                self.linker.root().func_new(
-                    &self.component.0,
-                    &name,
-                    move |_ctx, args, results| {
+                self.linker
+                    .root()
+                    .func_new(&name, move |_ctx, args, results| {
                         let mut store = store.lock().unwrap();
                         export_func.call(&mut *store, args, results)?;
                         export_func.post_return(&mut *store)?;
                         Ok(())
-                    },
-                )?;
+                    })?;
             }
         }
         self.refresh()?;
@@ -403,7 +392,7 @@ impl ImportImplStdout {
 #[async_trait::async_trait]
 impl HostOutputStream for ImportImplStdout {
     fn write(&mut self, bytes: bytes::Bytes) -> StreamResult<()> {
-        let output = String::from_utf8_lossy(&*bytes);
+        let output = String::from_utf8_lossy(&bytes);
         let output = format!("{} {output}", self.prefix);
         self.stream.write(output.into_bytes().into())
     }

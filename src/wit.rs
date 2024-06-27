@@ -127,8 +127,8 @@ impl WorldResolver {
             wit_parser::Type::S16 => "s16",
             wit_parser::Type::S32 => "s32",
             wit_parser::Type::S64 => "s64",
-            wit_parser::Type::Float32 => "float32",
-            wit_parser::Type::Float64 => "float64",
+            wit_parser::Type::F32 => "float32",
+            wit_parser::Type::F64 => "float64",
             wit_parser::Type::String => "string",
             wit_parser::Type::Char => "char",
             wit_parser::Type::Id(id) => {
@@ -240,11 +240,11 @@ impl WorldResolver {
                 Expansion::Collapsed => typ.name.clone().unwrap(),
             },
             // TODO: Fill these in with more information.
-            wit_parser::TypeDefKind::Resource => format!("resource<...>"),
-            wit_parser::TypeDefKind::Handle(_) => format!("handle<...>"),
-            wit_parser::TypeDefKind::Flags(_) => format!("flags<...>"),
-            wit_parser::TypeDefKind::Future(_) => format!("future<...>"),
-            wit_parser::TypeDefKind::Stream(_) => format!("stream<...>"),
+            wit_parser::TypeDefKind::Resource => "resource<...>".into(),
+            wit_parser::TypeDefKind::Handle(_) => "handle<...>".into(),
+            wit_parser::TypeDefKind::Flags(_) => "flags<...>".into(),
+            wit_parser::TypeDefKind::Future(_) => "future<...>".into(),
+            wit_parser::TypeDefKind::Stream(_) => "stream<...>".into(),
             wit_parser::TypeDefKind::Unknown => unreachable!(),
         };
         Cow::Owned(display)
@@ -311,7 +311,7 @@ impl WorldResolver {
             .imports
             .iter()
             .filter(move |(_, item)| match item {
-                WorldItem::Interface(id) if !include_wasi_cli => {
+                WorldItem::Interface { id, .. } if !include_wasi_cli => {
                     let interface = self.interface_by_id(*id).unwrap();
                     let Some(package) = interface.package else {
                         return true;
@@ -346,8 +346,8 @@ impl WorldResolver {
         items: impl Iterator<Item = (&'a WorldKey, &'a WorldItem)>,
     ) -> Option<&Interface> {
         let item = self.get_world_item_by_name(items, &ident.to_string())?;
-        if let WorldItem::Interface(i) = item {
-            return self.interface_by_id(*i);
+        if let WorldItem::Interface { id, .. } = item {
+            return self.interface_by_id(*id);
         }
         None
     }
